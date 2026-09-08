@@ -13,7 +13,7 @@ import pytest
 import requests
 from google.auth.credentials import AnonymousCredentials
 
-from googleapis_without_429 import SHEETS, RateLimitedSession
+from googleapis_without_429 import DRIVE, SHEETS, RateLimitedSession
 
 from .conftest import FakeClock
 
@@ -199,7 +199,7 @@ class TestRetryOn429:
 
         session.send(prepared("GET", SHEET_URL))
 
-        bucket = session._buckets[("sheets.googleapis.com", "read")]
+        bucket = session._buckets[("sheets", "read")]
         assert bucket.used == 3
 
     def test_a_retry_after_header_wins_over_our_own_backoff(
@@ -244,7 +244,7 @@ class TestProfileErrors:
             name=broken.name,
             host=broken.host,
             limits={"read": 10, "write": 10},
-            resolve=lambda method, path: ("typo", 1),
+            resolve=lambda method, path, query: ("typo", 1),
         )
         session = RateLimitedSession(
             AnonymousCredentials(),
@@ -255,3 +255,32 @@ class TestProfileErrors:
 
         with pytest.raises(ValueError, match="unknown bucket 'typo'"):
             session.send(prepared("GET", SHEET_URL))
+
+
+class TestMultipleProfiles:
+    def test_two_profiles_on_one_host_are_told_apart_by_path(
+        self, clock: FakeClock, transport
+    ) -> None:
+        """Drive shares www.googleapis.com, so the path decides, not the host."""
+        transport([response() for _ in range(2)])
+        session = RateLimitedSession(
+            AnonymousCredentials(),
+            [SHEETS, DRIVE],
+            clock=clock.time,
+            sleeper=clock.sleep,
+        )
+
+        session.send(prepared("GET", "https://www.googleapis.com/drive/v3/files"))
+        session.send(prepared("GET", "https://www.googleapis.com/calendar/v3/x"))
+
+        assert session._buckets[("drive", "units")].used == 100, "the Drive list"
+        # The Calendar call belonged to no profile and was left alone.
+
+    def test_duplicate_profile_names_are_rejected(self, clock: FakeClock) -> None:
+        """Buckets are keyed by profile name; duplicates would silently merge."""
+        with pytest.raises(ValueError, match="must be unique"):
+            RateLimitedSession(AnonymousCredentials(), [SHEETS, SHEETS])
+
+    def test_the_default_profiles_cover_sheets_and_drive(self) -> None:
+        session = RateLimitedSession(AnonymousCredentials())
+        assert {name for name, _ in session._buckets} == {"sheets", "drive"}

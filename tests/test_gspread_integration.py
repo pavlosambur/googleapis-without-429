@@ -14,12 +14,11 @@ import pytest
 import requests
 from google.auth.credentials import AnonymousCredentials
 
-from googleapis_without_429 import SHEETS, RateLimitedSession
+from googleapis_without_429 import DRIVE, SHEETS, RateLimitedSession
 
 from .conftest import FakeClock
 
 SPREADSHEET_ID = "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
-SHEETS_HOST = "sheets.googleapis.com"
 
 
 def json_response(payload: dict, status: int = 200) -> requests.Response:
@@ -71,14 +70,14 @@ def stub_transport(monkeypatch: pytest.MonkeyPatch):
 def session(clock: FakeClock) -> RateLimitedSession:
     return RateLimitedSession(
         AnonymousCredentials(),
-        [SHEETS],
+        [SHEETS, DRIVE],
         clock=clock.time,
         sleeper=clock.sleep,
     )
 
 
-def bucket(session: RateLimitedSession, name: str):
-    return session._buckets[(SHEETS_HOST, name)]
+def bucket(session: RateLimitedSession, profile: str, name: str):
+    return session._buckets[(profile, name)]
 
 
 class TestDropInAdoption:
@@ -107,8 +106,8 @@ class TestDropInAdoption:
 
         assert spreadsheet.title == "My Sheet"
         assert any(SPREADSHEET_ID in call for call in sent)
-        assert bucket(session, "read").used == 1
-        assert bucket(session, "write").used == 0
+        assert bucket(session, "sheets", "read").used == 1
+        assert bucket(session, "sheets", "write").used == 0
 
     def test_appending_a_row_charges_the_write_quota(
         self, session: RateLimitedSession, stub_transport
@@ -120,60 +119,59 @@ class TestDropInAdoption:
         spreadsheet = client.open_by_key(SPREADSHEET_ID)
         spreadsheet.sheet1.append_row(["a", "b"])
 
-        assert bucket(session, "write").used == 1
+        assert bucket(session, "sheets", "write").used == 1
 
 
-class TestCoverageBoundary:
-    """gspread is not one API. Some of it is Drive, and this profile is not."""
+class TestBothApis:
+    """gspread is not one API. Sheets moves the data; Drive owns the file."""
 
-    def test_creating_a_spreadsheet_goes_to_drive_and_is_not_throttled(
+    def test_creating_a_spreadsheet_charges_the_drive_quota(
         self, session: RateLimitedSession, stub_transport
     ) -> None:
-        """A documented limit, not an oversight: gc.create() is a Drive call.
-
-        Drive operations in gspread are one-off (create, delete, and looking a
-        sheet up by title); the loop that actually exhausts a quota is Sheets.
-        Covering Drive is deferred, so this test pins down what today's profile
-        does and does not touch.
-        """
+        """gc.create() is a Drive edit, then a Sheets read of the new file."""
         sent = stub_transport([{"id": SPREADSHEET_ID}, SPREADSHEET_PAYLOAD])
         client = gspread.authorize(AnonymousCredentials(), session=session)
 
         client.create("My Sheet")
 
         assert any("www.googleapis.com/drive" in call for call in sent)
-        assert bucket(session, "write").used == 0, "the Drive call was not metered"
-        assert bucket(session, "read").used == 1, "but the Sheets read that follows is"
+        assert bucket(session, "drive", "units").used == 50, "an edit costs 50 units"
+        assert bucket(session, "sheets", "read").used == 1
+        assert bucket(session, "sheets", "write").used == 0
 
-    def test_opening_by_title_searches_drive_first(
+    def test_opening_by_title_is_a_drive_search_then_a_sheets_read(
         self, session: RateLimitedSession, stub_transport
     ) -> None:
-        """gc.open("name") is a Drive search plus a Sheets read."""
+        """A list costs 100 units -- twenty times a plain item read."""
         sent = stub_transport(
-            [{"files": [{"id": SPREADSHEET_ID, "name": "My Sheet"}]},
-             SPREADSHEET_PAYLOAD]
+            [
+                {"files": [{"id": SPREADSHEET_ID, "name": "My Sheet"}]},
+                SPREADSHEET_PAYLOAD,
+            ]
         )
         client = gspread.authorize(AnonymousCredentials(), session=session)
 
         client.open("My Sheet")
 
         assert any("www.googleapis.com/drive" in call for call in sent)
-        assert bucket(session, "read").used == 1
+        assert bucket(session, "drive", "units").used == 100
+        assert bucket(session, "sheets", "read").used == 1
 
-    def test_a_loop_of_reads_throttles_without_the_caller_doing_anything(
+    def test_the_two_apis_do_not_share_a_quota(
         self, clock: FakeClock, stub_transport
     ) -> None:
-        """The scenario from the README: an ordinary loop, no code changes."""
-        stub_transport([SPREADSHEET_PAYLOAD for _ in range(4)])
+        """Exhausting Sheets must not stall Drive, and the reverse."""
+        stub_transport([SPREADSHEET_PAYLOAD, SPREADSHEET_PAYLOAD, {"files": []}])
         limited = RateLimitedSession(
             AnonymousCredentials(),
-            [SHEETS.with_limits(read=3, write=3)],
+            [SHEETS.with_limits(read=2), DRIVE],
             clock=clock.time,
             sleeper=clock.sleep,
         )
         client = gspread.authorize(AnonymousCredentials(), session=limited)
 
-        for _ in range(4):
-            client.open_by_key(SPREADSHEET_ID)
+        client.open_by_key(SPREADSHEET_ID)
+        client.open_by_key(SPREADSHEET_ID)
+        client.list_spreadsheet_files()  # Drive, with the Sheets read quota spent
 
-        assert clock.now == pytest.approx(60.0), "the fourth read waited its turn"
+        assert clock.slept == []

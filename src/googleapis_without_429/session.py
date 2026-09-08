@@ -12,7 +12,7 @@ from requests import PreparedRequest, Response
 
 from googleapis_without_429.backoff import equal_jitter_delay, parse_retry_after
 from googleapis_without_429.core import WeightedSlidingWindow
-from googleapis_without_429.profiles import SHEETS, ApiProfile
+from googleapis_without_429.profiles import DRIVE, SHEETS, ApiProfile
 
 __all__ = ["RateLimitedSession"]
 
@@ -28,13 +28,15 @@ class RateLimitedSession(AuthorizedSession):
         session = RateLimitedSession(credentials)
         client = gspread.authorize(credentials, session=session)
 
-    Requests to hosts without a profile pass straight through. That is not a
+    Requests that no profile claims pass straight through. That is not a
     detail: an authorised session fetches tokens from ``oauth2.googleapis.com``,
     and those calls must not consume the quota of the API being limited.
 
     Args:
         credentials: Google credentials, as for ``AuthorizedSession``.
-        profiles: APIs to pace. Defaults to Sheets, the only one shipped so far.
+        profiles: APIs to pace. Defaults to Sheets and Drive, which together
+            cover gspread -- it reaches Drive to create, delete, share or
+            look up a spreadsheet by title.
         window: Length of the quota window in seconds. Google meters per minute.
         max_attempts: Total tries per request, including the first. The retry
             exists because our window and Google's are not aligned; see
@@ -53,7 +55,7 @@ class RateLimitedSession(AuthorizedSession):
     def __init__(
         self,
         credentials: object,
-        profiles: Sequence[ApiProfile] = (SHEETS,),
+        profiles: Sequence[ApiProfile] = (SHEETS, DRIVE),
         *,
         window: float = 60.0,
         max_attempts: int = 5,
@@ -72,9 +74,18 @@ class RateLimitedSession(AuthorizedSession):
         if max_attempts < 1:
             raise ValueError(f"max_attempts must be at least 1, got {max_attempts!r}")
 
-        self._profiles = {profile.host: profile for profile in profiles}
+        names = [profile.name for profile in profiles]
+        duplicates = {name for name in names if names.count(name) > 1}
+        if duplicates:
+            raise ValueError(
+                f"profile names must be unique, got duplicates: {sorted(duplicates)}"
+            )
+
+        # A list rather than a dict keyed by host: www.googleapis.com serves
+        # more than one API, so the host alone no longer picks a profile.
+        self._profiles = tuple(profiles)
         self._buckets = {
-            (profile.host, bucket): WeightedSlidingWindow(
+            (profile.name, bucket): WeightedSlidingWindow(
                 limit,
                 window,
                 name=f"{profile.name}:{bucket}",
@@ -94,13 +105,15 @@ class RateLimitedSession(AuthorizedSession):
     def send(self, request: PreparedRequest, **kwargs: object) -> Response:
         """Pace the request against its profile, then retry a 429."""
         url = urlparse(request.url or "")
-        profile = self._profiles.get(url.netloc)
+        profile = self._profile_for(url.netloc, url.path)
         if profile is None:
             return super().send(request, **kwargs)  # type: ignore[arg-type]
 
-        bucket_name, cost = profile.resolve(request.method or "GET", url.path)
+        bucket_name, cost = profile.resolve(
+            request.method or "GET", url.path, url.query
+        )
         try:
-            bucket = self._buckets[(profile.host, bucket_name)]
+            bucket = self._buckets[(profile.name, bucket_name)]
         except KeyError:
             known = ", ".join(sorted(profile.limits))
             raise ValueError(
@@ -124,6 +137,13 @@ class RateLimitedSession(AuthorizedSession):
                 # own client (gspread, say) turns it into its own exception.
                 return response
             self._sleep(self._delay_after_429(attempts - 1, response))
+
+    def _profile_for(self, host: str, path: str) -> ApiProfile | None:
+        """The first profile claiming this host and path, if any."""
+        for profile in self._profiles:
+            if profile.claims(host, path):
+                return profile
+        return None
 
     def _delay_after_429(self, attempt: int, response: Response) -> float:
         """Prefer the server's instruction, fall back on our own backoff."""

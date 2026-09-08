@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from googleapis_without_429.profiles import SHEETS, ApiProfile, resolve_sheets
+from googleapis_without_429.profiles import (
+    DRIVE,
+    SHEETS,
+    ApiProfile,
+    resolve_drive,
+    resolve_sheets,
+)
 
 SHEET_ID = "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
 
@@ -169,3 +175,88 @@ class TestProfileLimits:
             ApiProfile(
                 name="bad", host="x", limits={"read": 0}, resolve=resolve_sheets
             )
+
+
+DRIVE_FILE_ID = "1AbCdEfGhIjKlMnOpQrStUvWxYz"
+
+# Drive prices calls in quota units, from the published limits table.
+DRIVE_METHODS = [
+    # (label, http_method, path, query, expected cost)
+    ("files.list", "GET", "/drive/v3/files", "", 100),
+    ("files.get", "GET", f"/drive/v3/files/{DRIVE_FILE_ID}", "", 5),
+    (
+        "files.get download",
+        "GET",
+        f"/drive/v3/files/{DRIVE_FILE_ID}",
+        "alt=media",
+        200,
+    ),
+    ("files.export", "GET", f"/drive/v3/files/{DRIVE_FILE_ID}/export", "", 200),
+    (
+        "permissions.list",
+        "GET",
+        f"/drive/v3/files/{DRIVE_FILE_ID}/permissions",
+        "",
+        100,
+    ),
+    (
+        "permissions.get",
+        "GET",
+        f"/drive/v3/files/{DRIVE_FILE_ID}/permissions/p1",
+        "",
+        5,
+    ),
+    ("files.create", "POST", "/drive/v3/files", "", 50),
+    ("files.update", "PATCH", f"/drive/v3/files/{DRIVE_FILE_ID}", "", 50),
+    ("files.delete", "DELETE", f"/drive/v3/files/{DRIVE_FILE_ID}", "", 50),
+    ("files.copy", "POST", f"/drive/v3/files/{DRIVE_FILE_ID}/copy", "", 50),
+    ("upload v2", "POST", "/upload/drive/v2/files", "uploadType=media", 50),
+]
+
+
+class TestDriveResolution:
+    @pytest.mark.parametrize(
+        ("http_method", "path", "query", "expected"),
+        [(m, p, q, c) for _, m, p, q, c in DRIVE_METHODS],
+        ids=[label for label, *_ in DRIVE_METHODS],
+    )
+    def test_calls_are_priced_in_quota_units(
+        self, http_method: str, path: str, query: str, expected: int
+    ) -> None:
+        bucket, cost = resolve_drive(http_method, path, query)
+        assert bucket == "units", "Drive meters everything against one pool"
+        assert cost == expected
+
+    def test_listing_costs_twenty_times_a_single_read(self) -> None:
+        """Counting calls instead of units would treat these as equal."""
+        _, listing = resolve_drive("GET", "/drive/v3/files", "")
+        _, reading = resolve_drive("GET", f"/drive/v3/files/{DRIVE_FILE_ID}", "")
+        assert listing == reading * 20
+
+    def test_an_unknown_api_version_is_still_understood(self) -> None:
+        _, cost = resolve_drive("GET", f"/drive/v4/files/{DRIVE_FILE_ID}", "")
+        assert cost == 5
+
+
+class TestProfileClaims:
+    def test_sheets_claims_its_whole_host(self) -> None:
+        assert SHEETS.claims("sheets.googleapis.com", "/v4/spreadsheets/x")
+        assert SHEETS.claims("sheets.googleapis.com", "/anything/new")
+
+    def test_a_profile_ignores_other_hosts(self) -> None:
+        assert not SHEETS.claims("oauth2.googleapis.com", "/token")
+        assert not DRIVE.claims("sheets.googleapis.com", "/drive/v3/files")
+
+    def test_drive_claims_only_its_paths_on_a_shared_host(self) -> None:
+        """www.googleapis.com serves more than Drive; the rest is not ours."""
+        assert DRIVE.claims("www.googleapis.com", "/drive/v3/files")
+        assert DRIVE.claims("www.googleapis.com", "/upload/drive/v2/files")
+        assert not DRIVE.claims("www.googleapis.com", "/calendar/v3/calendars")
+        assert not DRIVE.claims("www.googleapis.com", "/youtube/v3/videos")
+
+    def test_drive_defaults_to_the_current_per_user_quota(self) -> None:
+        assert dict(DRIVE.limits) == {"units": 325_000}
+
+    def test_drive_limits_are_overridable_for_an_older_project(self) -> None:
+        """Projects predating 1 May 2026 run on a different, older quota."""
+        assert dict(DRIVE.with_limits(units=12_000).limits) == {"units": 12_000}

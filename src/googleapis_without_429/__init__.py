@@ -3,7 +3,7 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from googleapis_without_429.core import WeightedSlidingWindow
-from googleapis_without_429.profiles import SHEETS, ApiProfile
+from googleapis_without_429.profiles import DRIVE, SHEETS, ApiProfile
 from googleapis_without_429.session import RateLimitedSession
 
 try:
@@ -12,6 +12,7 @@ except PackageNotFoundError:  # pragma: no cover - only when running from source
     __version__ = "0.0.0.dev0"
 
 __all__ = [
+    "DRIVE",
     "SHEETS",
     "ApiProfile",
     "RateLimitedSession",

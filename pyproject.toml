@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "googleapis-without-429"
+version = "0.1.0.dev0"
+description = "Drop-in transport for Google API clients that stays inside the quota instead of recovering from 429."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Pavlo Sambur", email = "samburp@gmail.com" }]
+keywords = [
+    "google-api",
+    "rate-limiting",
+    "quota",
+    "429",
+    "gspread",
+    "google-sheets",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+dependencies = [
+    "requests>=2.31",
+    "google-auth>=2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/pavlosambur/googleapis-without-429"
+Repository = "https://github.com/pavlosambur/googleapis-without-429"
+Issues = "https://github.com/pavlosambur/googleapis-without-429/issues"
+Changelog = "https://github.com/pavlosambur/googleapis-without-429/blob/main/CHANGELOG.md"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"

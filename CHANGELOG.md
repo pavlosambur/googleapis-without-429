@@ -16,5 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   separate read and write quotas, and how a call maps to one of them. Limits
   are overridable with `SHEETS.with_limits(read=300, write=300)`, since real
   quotas depend on the project and Google revises them.
+- `RateLimitedSession`: an `AuthorizedSession` that paces itself against a
+  profile's quotas and retries a 429 with equal-jitter backoff, honouring
+  `Retry-After` when the server sends one. Requests to hosts without a profile
+  pass through untouched, so token refreshes do not consume the API's quota.
+  Drop it into any client that accepts a session, such as gspread.
 
 [Unreleased]: https://github.com/pavlosambur/googleapis-without-429/commits/main/

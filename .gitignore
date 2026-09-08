@@ -25,3 +25,6 @@ coverage.xml
 .DS_Store
 .idea/
 .vscode/
+
+# Local backlog, not part of the public project
+TODO.md

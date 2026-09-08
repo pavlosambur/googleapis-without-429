@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing released yet.
+### Added
+
+- `WeightedSlidingWindow`: thread-safe core limiter that counts cost rather
+  than calls, so one implementation covers both request-counted APIs (Sheets)
+  and quota-unit APIs (Gmail).
 
 [Unreleased]: https://github.com/pavlosambur/googleapis-without-429/commits/main/

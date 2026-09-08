@@ -1,18 +1,17 @@
-# Local planning notes, not part of the public project
-PROJECT_BRIEF.md
-
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
+# Build output
 build/
 dist/
+*.egg-info/
 
-# Environments
+# Bytecode
+__pycache__/
+*.py[cod]
+
+# Virtual environments
 .venv/
 venv/
 
-# Tooling caches
+# Tool caches and coverage
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -21,10 +20,5 @@ venv/
 htmlcov/
 coverage.xml
 
-# OS / editors
+# macOS writes these into every directory it opens
 .DS_Store
-.idea/
-.vscode/
-
-# Local backlog, not part of the public project
-TODO.md

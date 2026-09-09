@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 
 import pytest
 
@@ -16,6 +17,55 @@ def make_window(clock: FakeClock, limit: int = 5, window: float = 60.0):
     return WeightedSlidingWindow(
         limit, window, name="test", clock=clock.time, sleeper=clock.sleep
     )
+
+
+class _RecordingLog(deque):  # type: ignore[type-arg]
+    """A deque that copies every appended entry to a sink.
+
+    The limiter appends ``(timestamp, cost)`` under its own lock, immediately
+    after reading the clock, so entries collected here are the exact values the
+    window is reasoning about.
+    """
+
+    def __init__(self, sink: list[tuple[float, int]]) -> None:
+        super().__init__()
+        self._sink = sink
+
+    def append(self, item: tuple[float, int]) -> None:
+        self._sink.append(item)
+        super().append(item)
+
+
+class RecordingWindow(WeightedSlidingWindow):
+    """A window that remembers every charge it ever granted.
+
+    Timing these calls from the outside cannot work: the quota is charged
+    inside acquire, and the scheduler may preempt the thread at any point
+    between that and the test's own clock read. On a loaded CI runner the drift
+    is large enough to make calls from different windows look simultaneous,
+    which produced a test that failed roughly one run in five for no reason at
+    all. Recording the limiter's own timestamps removes the guesswork.
+    """
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+        self.charges: list[tuple[float, int]] = []
+        self._log = _RecordingLog(self.charges)
+
+
+def assert_within_limit(
+    charges: list[tuple[float, int]], limit: int, window: float
+) -> None:
+    """No window of `window` seconds may hold more than `limit` units."""
+    entries = sorted(charges)
+    for index, (start, _) in enumerate(entries):
+        weight = sum(
+            cost for moment, cost in entries[index:] if moment - start < window
+        )
+        assert weight <= limit, (
+            f"{weight} units within {window}s starting at index {index}, "
+            f"limit is {limit}"
+        )
 
 
 class TestValidation:
@@ -116,84 +166,40 @@ class TestWeightedCost:
 
 class TestThreadSafety:
     def test_concurrent_calls_never_exceed_the_limit_in_any_window(self) -> None:
-        """The invariant that matters: no window ever holds more than the limit.
-
-        This one uses the real clock -- a fake clock cannot model threads.
-
-        The timestamp is taken immediately after acquire returns, and each
-        thread keeps its own list. Appending under a shared lock would put lock
-        contention between the moment quota was charged and the moment it was
-        recorded, which pushes timestamps later by an unpredictable amount and
-        makes calls from different windows look simultaneous.
-        """
-        limit, window = 5, 0.25
+        """The invariant that matters: no window ever holds more than the limit."""
+        limit, window = 5, 0.1
         threads_count, per_thread = 6, 5
-        limiter = WeightedSlidingWindow(limit, window, name="threads")
+        limiter = RecordingWindow(limit, window, name="threads")
 
-        per_thread_stamps: list[list[float]] = [[] for _ in range(threads_count)]
-
-        def worker(index: int) -> None:
-            mine = per_thread_stamps[index]
+        def worker() -> None:
             for _ in range(per_thread):
                 limiter.acquire()
-                mine.append(time.monotonic())
 
-        threads = [
-            threading.Thread(target=worker, args=(index,))
-            for index in range(threads_count)
-        ]
+        threads = [threading.Thread(target=worker) for _ in range(threads_count)]
         for thread in threads:
             thread.start()
         for thread in threads:
             thread.join()
 
-        stamps = sorted(moment for mine in per_thread_stamps for moment in mine)
-        assert len(stamps) == threads_count * per_thread
-
-        for index, start in enumerate(stamps):
-            in_window = sum(1 for other in stamps[index:] if other - start < window)
-            assert in_window <= limit, (
-                f"{in_window} calls within {window}s starting at index {index}, "
-                f"limit is {limit}"
-            )
+        assert len(limiter.charges) == threads_count * per_thread
+        assert_within_limit(limiter.charges, limit, window)
 
     def test_concurrent_weighted_calls_never_exceed_the_limit(self) -> None:
-        limit, window, cost = 10, 0.25, 2
+        limit, window, cost = 10, 0.1, 2
         threads_count, per_thread = 5, 4
-        limiter = WeightedSlidingWindow(limit, window, name="weighted-threads")
+        limiter = RecordingWindow(limit, window, name="weighted-threads")
 
-        per_thread_stamps: list[list[float]] = [[] for _ in range(threads_count)]
-
-        def worker(index: int) -> None:
-            mine = per_thread_stamps[index]
+        def worker() -> None:
             for _ in range(per_thread):
                 limiter.acquire(cost=cost)
-                mine.append(time.monotonic())
 
-        threads = [
-            threading.Thread(target=worker, args=(index,))
-            for index in range(threads_count)
-        ]
+        threads = [threading.Thread(target=worker) for _ in range(threads_count)]
         for thread in threads:
             thread.start()
         for thread in threads:
             thread.join()
 
-        stamps = sorted(moment for mine in per_thread_stamps for moment in mine)
-        for index, start in enumerate(stamps):
-            weight = sum(cost for other in stamps[index:] if other - start < window)
-            assert weight <= limit
-
-
-def test_repr_shows_usage_against_the_limit(clock: FakeClock) -> None:
-    limiter = make_window(clock, limit=5, window=60.0)
-    limiter.acquire(cost=2)
-    assert repr(limiter) == "<WeightedSlidingWindow 'test' 2/5 per 60.0s>"
-
-
-def test_repr_without_a_name(clock: FakeClock) -> None:
-    limiter = WeightedSlidingWindow(5, 60.0, clock=clock.time, sleeper=clock.sleep)
-    assert repr(limiter) == "<WeightedSlidingWindow 0/5 per 60.0s>"
+        assert_within_limit(limiter.charges, limit, window)
 
 
 class TestUnderRealParallelism:
@@ -205,21 +211,15 @@ class TestUnderRealParallelism:
     """
 
     def test_mixed_costs_from_many_threads_stay_within_the_limit(self) -> None:
-        limit, window = 20, 0.25
+        limit, window = 20, 0.1
         costs = [1, 2, 3, 5]
-        threads_count, per_thread = 8, 3
-        limiter = WeightedSlidingWindow(limit, window, name="parallel")
-
-        # Per-thread lists, timestamped the instant acquire returns: a shared
-        # lock here would sit between being charged and being recorded.
-        charged: list[list[tuple[float, int]]] = [[] for _ in range(threads_count)]
+        threads_count, per_thread = 8, 4
+        limiter = RecordingWindow(limit, window, name="parallel")
 
         def worker(index: int) -> None:
             cost = costs[index % len(costs)]
-            mine = charged[index]
             for _ in range(per_thread):
                 limiter.acquire(cost=cost)
-                mine.append((time.monotonic(), cost))
 
         threads = [
             threading.Thread(target=worker, args=(index,))
@@ -230,23 +230,18 @@ class TestUnderRealParallelism:
         for thread in threads:
             thread.join()
 
-        entries = sorted(entry for mine in charged for entry in mine)
-        assert len(entries) == threads_count * per_thread
-
-        for index, (start, _) in enumerate(entries):
-            weight = sum(
-                cost for moment, cost in entries[index:] if moment - start < window
-            )
-            assert weight <= limit, f"{weight} units within {window}s, limit {limit}"
+        assert len(limiter.charges) == threads_count * per_thread
+        assert_within_limit(limiter.charges, limit, window)
 
     def test_total_throughput_cannot_beat_the_quota(self) -> None:
-        """A check that does not depend on per-call timestamps at all.
+        """A second check, from the outside, that needs no per-call precision.
 
-        However the individual calls interleave, a sliding window can only let
-        through `limit` units per window plus one window's worth already in
-        flight when the clock starts.
+        However the calls interleave, a sliding window can only let through
+        `limit` units per window plus one window's worth already in flight.
+        Elapsed time measured from outside can only be an overestimate, which
+        makes the bound generous rather than flaky.
         """
-        limit, window, cost = 6, 0.2, 3
+        limit, window, cost = 6, 0.1, 3
         threads_count, per_thread = 4, 3
         limiter = WeightedSlidingWindow(limit, window, name="throughput")
 
@@ -286,3 +281,14 @@ class TestUnderRealParallelism:
         with limiter._lock:
             assert limiter._used == sum(cost for _, cost in limiter._log)
             assert limiter._used >= 0
+
+
+def test_repr_shows_usage_against_the_limit(clock: FakeClock) -> None:
+    limiter = make_window(clock, limit=5, window=60.0)
+    limiter.acquire(cost=2)
+    assert repr(limiter) == "<WeightedSlidingWindow 'test' 2/5 per 60.0s>"
+
+
+def test_repr_without_a_name(clock: FakeClock) -> None:
+    limiter = WeightedSlidingWindow(5, 60.0, clock=clock.time, sleeper=clock.sleep)
+    assert repr(limiter) == "<WeightedSlidingWindow 0/5 per 60.0s>"

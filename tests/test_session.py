@@ -7,7 +7,7 @@ retries -- and nothing else.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 
 import pytest
 import requests
@@ -19,7 +19,7 @@ from .conftest import FakeClock
 
 SHEET_URL = "https://sheets.googleapis.com/v4/spreadsheets/abc123"
 VALUES_URL = f"{SHEET_URL}/values/A1:B2"
-TOKEN_URL = "https://oauth2.googleapis.com/token"
+TOKEN_URL = "https://oauth2.googleapis.com/token"  # noqa: S105 - a URL, not a secret
 
 
 def response(status: int = 200, **headers: str) -> requests.Response:
@@ -41,12 +41,13 @@ def transport(monkeypatch: pytest.MonkeyPatch):
         sent: list[str] = []
         stream = iter(responses)
 
-        def fake_send(self, request, **kwargs):  # type: ignore[no-untyped-def]
+        def fake_send(self, request, **kwargs):
             sent.append(f"{request.method} {request.url}")
             try:
                 return next(stream)
             except StopIteration:  # pragma: no cover - a test set up too few
-                raise AssertionError("transport called more times than expected")
+                msg = "transport called more times than expected"
+                raise AssertionError(msg) from None
 
         monkeypatch.setattr(requests.Session, "send", fake_send)
         return sent
@@ -212,9 +213,7 @@ class TestRetryOn429:
 
         assert clock.slept == [17.0]
 
-    def test_an_absurd_retry_after_is_capped(
-        self, clock: FakeClock, transport
-    ) -> None:
+    def test_an_absurd_retry_after_is_capped(self, clock: FakeClock, transport) -> None:
         """A proxy asking for an hour should not park the process for an hour."""
         transport([response(429, **{"Retry-After": "3600"}), response(200)])
         session = make_session(clock, retry_after_cap=30.0)
@@ -231,7 +230,8 @@ class TestRetryOn429:
 
         session.send(prepared("GET", SHEET_URL))
 
-        assert clock.slept and 2.0 <= clock.slept[0] <= 4.0
+        assert clock.slept
+        assert 2.0 <= clock.slept[0] <= 4.0
 
 
 class TestProfileErrors:

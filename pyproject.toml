@@ -46,10 +46,115 @@ Changelog = "https://github.com/pavlosambur/googleapis-without-429/blob/main/CHA
 [dependency-groups]
 dev = [
     "gspread>=6.2.1",
+    "mypy>=2.3.1",
+    "pre-commit>=4.6.2",
     "pytest>=8",
     "pytest-cov>=5",
+    "ruff>=0.16.6",
+    "types-requests>=2.33.0.20260906",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Rules are listed explicitly rather than switched on wholesale: a set nobody
+# chose is a set that gets silenced with noqa the first time it complains.
+select = [
+    "A",     # shadowing a builtin
+    "ANN",   # missing type annotations
+    "ARG",   # unused arguments
+    "B",     # bugbear: likely mistakes
+    "C4",    # comprehension style
+    "D",     # docstring conventions
+    "DTZ",   # naive datetimes
+    "E",     # pycodestyle errors
+    "F",     # pyflakes
+    "FBT",   # boolean positional arguments
+    "I",     # import sorting
+    "ICN",   # import naming conventions
+    "N",     # pep8 naming
+    "PERF",  # obvious performance mistakes
+    "PIE",   # miscellaneous lints
+    "PL",    # pylint subset
+    "PT",    # pytest style
+    "PTH",   # use pathlib
+    "RET",   # return statement style
+    "RUF",   # ruff-specific
+    "S",     # bandit: security
+    "SIM",   # simplifiable code
+    "SLF",   # private member access
+    "T20",   # stray print()
+    "TID",   # tidy imports
+    "UP",    # outdated syntax for the supported Python range
+    "W",     # pycodestyle warnings
+]
+ignore = [
+    # Assigning every exception message to a variable first makes small error
+    # paths harder to read, not easier.
+    "EM101",
+    "EM102",
+    "TRY003",
+    # The formatter owns these; enabling them fights it.
+    "COM812",
+    "ISC001",
+    # Documented at the class level; repeating it on __init__ is noise.
+    "D107",
+    # __repr__ and friends document themselves.
+    "D105",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "ANN",     # test signatures are not an API
+    "D",       # docstrings in tests are for the interesting cases only
+    "S101",    # assert is the point
+    "SLF001",  # tests reach into internals deliberately
+    "ARG",     # fixtures and stub signatures carry arguments they ignore
+    "PLR2004", # literal expectations are clearer than named constants here
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+known-first-party = ["googleapis_without_429"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unreachable = true
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["gspread.*"]
+ignore_missing_imports = true
+
+# Test bodies stay strictly checked, but they are allowed to call the parts of
+# google-auth that ship without annotations, and pytest fixtures need not
+# repeat types the framework already knows.
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+
+[tool.coverage.run]
+source = ["src"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    # A Protocol body never runs; it exists for the type checker.
+    "class .*\\(Protocol\\):",
+]

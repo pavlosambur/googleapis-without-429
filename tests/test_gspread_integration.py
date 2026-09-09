@@ -21,7 +21,7 @@ from .conftest import FakeClock
 SPREADSHEET_ID = "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
 
 
-def json_response(payload: dict, status: int = 200) -> requests.Response:
+def json_response(payload: dict[str, object], status: int = 200) -> requests.Response:
     made = requests.Response()
     made.status_code = status
     made._content = json.dumps(payload).encode()
@@ -52,11 +52,11 @@ SPREADSHEET_PAYLOAD = {
 
 @pytest.fixture
 def stub_transport(monkeypatch: pytest.MonkeyPatch):
-    def install(payloads: list[dict]) -> list[str]:
+    def install(payloads: list[dict[str, object]]) -> list[str]:
         sent: list[str] = []
         stream = iter(payloads)
 
-        def fake_send(self, request, **kwargs):  # type: ignore[no-untyped-def]
+        def fake_send(self, request, **kwargs):
             sent.append(f"{request.method} {request.url}")
             return json_response(next(stream))
 

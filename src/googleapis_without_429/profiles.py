@@ -59,7 +59,11 @@ def _trailing_verb(path: str) -> str:
     return verb.lower() if separator else ""
 
 
-def resolve_sheets(http_method: str, path: str, query: str = "") -> tuple[str, int]:
+def resolve_sheets(
+    http_method: str,
+    path: str,
+    query: str = "",  # noqa: ARG001 - part of the resolver contract; Drive needs it
+) -> tuple[str, int]:
     """Classify a Sheets API call into a quota bucket and its cost.
 
     Sheets counts requests, so the cost is always 1 -- including batch calls,

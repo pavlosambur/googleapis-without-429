@@ -83,9 +83,7 @@ class TestWindowBehaviour:
 
 
 class TestWeightedCost:
-    def test_cost_counts_as_weight_not_as_a_single_call(
-        self, clock: FakeClock
-    ) -> None:
+    def test_cost_counts_as_weight_not_as_a_single_call(self, clock: FakeClock) -> None:
         """Three calls of cost 4 must not fit in a limit of 10, though 3 < 10."""
         limiter = make_window(clock, limit=10, window=60.0)
         limiter.acquire(cost=4)

@@ -1,0 +1,30 @@
+# Runs on commit. The same checks run again in CI, because a hook can be
+# skipped with --no-verify and a pipeline cannot.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.6
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        # --no-sync matters: a plain `uv run` reconciles uv.lock with
+        # pyproject.toml, and a hook that rewrites a file mid-commit fails.
+        entry: uv run --no-sync mypy
+        language: system
+        pass_filenames: false
+        types: [python]

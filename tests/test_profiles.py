@@ -66,7 +66,12 @@ SHEETS_METHODS = [
         f"/v4/spreadsheets/{SHEET_ID}/values/A1:B2:append",
         "write",
     ),
-    ("values.clear", "POST", f"/v4/spreadsheets/{SHEET_ID}/values/A1:B2:clear", "write"),
+    (
+        "values.clear",
+        "POST",
+        f"/v4/spreadsheets/{SHEET_ID}/values/A1:B2:clear",
+        "write",
+    ),
     (
         "values.batchUpdate",
         "POST",
@@ -172,9 +177,7 @@ class TestProfileLimits:
 
     def test_rejects_a_non_positive_limit(self) -> None:
         with pytest.raises(ValueError, match="must be positive"):
-            ApiProfile(
-                name="bad", host="x", limits={"read": 0}, resolve=resolve_sheets
-            )
+            ApiProfile(name="bad", host="x", limits={"read": 0}, resolve=resolve_sheets)
 
 
 DRIVE_FILE_ID = "1AbCdEfGhIjKlMnOpQrStUvWxYz"
@@ -260,3 +263,10 @@ class TestProfileClaims:
     def test_drive_limits_are_overridable_for_an_older_project(self) -> None:
         """Projects predating 1 May 2026 run on a different, older quota."""
         assert dict(DRIVE.with_limits(units=12_000).limits) == {"units": 12_000}
+
+    def test_a_path_without_the_drive_prefix_is_still_parsed(self) -> None:
+        """resolve_drive is public, so it must cope with a path already stripped."""
+        assert resolve_drive("GET", f"/files/{DRIVE_FILE_ID}", "")[1] == 5
+
+    def test_a_path_without_a_version_segment_is_still_parsed(self) -> None:
+        assert resolve_drive("GET", "/drive/files", "")[1] == 100

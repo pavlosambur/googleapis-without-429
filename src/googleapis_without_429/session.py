@@ -52,7 +52,7 @@ class RateLimitedSession(AuthorizedSession):
         **kwargs: Forwarded to ``AuthorizedSession``.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - tuning knobs, all keyword-only with defaults
         self,
         credentials: object,
         profiles: Sequence[ApiProfile] = (SHEETS, DRIVE),
@@ -67,7 +67,8 @@ class RateLimitedSession(AuthorizedSession):
         clock: Callable[[], float] = time.monotonic,
         **kwargs: object,
     ) -> None:
-        super().__init__(credentials, **kwargs)  # type: ignore[arg-type]
+        # google-auth ships no annotations for AuthorizedSession.__init__.
+        super().__init__(credentials, **kwargs)  # type: ignore[no-untyped-call]
 
         if not profiles:
             raise ValueError("at least one profile is required")

@@ -45,7 +45,9 @@ def equal_jitter_delay(
     """
     if attempt < 0:
         raise ValueError(f"attempt must not be negative, got {attempt!r}")
-    ceiling = min(cap, base * (2**attempt))
+    # 2.0 rather than 2: `int ** int` is Any to a type checker, because a
+    # negative exponent would produce a float.
+    ceiling = min(cap, base * (2.0**attempt))
     half = ceiling / 2
     return half + rng.uniform(0.0, half)
 
@@ -78,8 +80,6 @@ def parse_retry_after(
     try:
         when = parsedate_to_datetime(text)
     except (TypeError, ValueError):
-        return None
-    if when is None:  # pragma: no cover - older Python returns None on failure
         return None
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)

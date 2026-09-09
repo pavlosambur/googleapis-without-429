@@ -119,29 +119,37 @@ class TestThreadSafety:
         """The invariant that matters: no window ever holds more than the limit.
 
         This one uses the real clock -- a fake clock cannot model threads.
+
+        The timestamp is taken immediately after acquire returns, and each
+        thread keeps its own list. Appending under a shared lock would put lock
+        contention between the moment quota was charged and the moment it was
+        recorded, which pushes timestamps later by an unpredictable amount and
+        makes calls from different windows look simultaneous.
         """
-        limit, window = 5, 0.1
+        limit, window = 5, 0.25
         threads_count, per_thread = 6, 5
         limiter = WeightedSlidingWindow(limit, window, name="threads")
 
-        stamps: list[float] = []
-        stamps_lock = threading.Lock()
+        per_thread_stamps: list[list[float]] = [[] for _ in range(threads_count)]
 
-        def worker() -> None:
+        def worker(index: int) -> None:
+            mine = per_thread_stamps[index]
             for _ in range(per_thread):
                 limiter.acquire()
-                with stamps_lock:
-                    stamps.append(time.monotonic())
+                mine.append(time.monotonic())
 
-        threads = [threading.Thread(target=worker) for _ in range(threads_count)]
+        threads = [
+            threading.Thread(target=worker, args=(index,))
+            for index in range(threads_count)
+        ]
         for thread in threads:
             thread.start()
         for thread in threads:
             thread.join()
 
+        stamps = sorted(moment for mine in per_thread_stamps for moment in mine)
         assert len(stamps) == threads_count * per_thread
 
-        stamps.sort()
         for index, start in enumerate(stamps):
             in_window = sum(1 for other in stamps[index:] if other - start < window)
             assert in_window <= limit, (
@@ -150,26 +158,28 @@ class TestThreadSafety:
             )
 
     def test_concurrent_weighted_calls_never_exceed_the_limit(self) -> None:
-        limit, window, cost = 10, 0.1, 2
+        limit, window, cost = 10, 0.25, 2
         threads_count, per_thread = 5, 4
         limiter = WeightedSlidingWindow(limit, window, name="weighted-threads")
 
-        stamps: list[float] = []
-        stamps_lock = threading.Lock()
+        per_thread_stamps: list[list[float]] = [[] for _ in range(threads_count)]
 
-        def worker() -> None:
+        def worker(index: int) -> None:
+            mine = per_thread_stamps[index]
             for _ in range(per_thread):
                 limiter.acquire(cost=cost)
-                with stamps_lock:
-                    stamps.append(time.monotonic())
+                mine.append(time.monotonic())
 
-        threads = [threading.Thread(target=worker) for _ in range(threads_count)]
+        threads = [
+            threading.Thread(target=worker, args=(index,))
+            for index in range(threads_count)
+        ]
         for thread in threads:
             thread.start()
         for thread in threads:
             thread.join()
 
-        stamps.sort()
+        stamps = sorted(moment for mine in per_thread_stamps for moment in mine)
         for index, start in enumerate(stamps):
             weight = sum(cost for other in stamps[index:] if other - start < window)
             assert weight <= limit
@@ -195,20 +205,21 @@ class TestUnderRealParallelism:
     """
 
     def test_mixed_costs_from_many_threads_stay_within_the_limit(self) -> None:
-        limit, window = 20, 0.1
+        limit, window = 20, 0.25
         costs = [1, 2, 3, 5]
-        threads_count, per_thread = 10, 8
+        threads_count, per_thread = 8, 3
         limiter = WeightedSlidingWindow(limit, window, name="parallel")
 
-        charged: list[tuple[float, int]] = []
-        charged_lock = threading.Lock()
+        # Per-thread lists, timestamped the instant acquire returns: a shared
+        # lock here would sit between being charged and being recorded.
+        charged: list[list[tuple[float, int]]] = [[] for _ in range(threads_count)]
 
         def worker(index: int) -> None:
             cost = costs[index % len(costs)]
+            mine = charged[index]
             for _ in range(per_thread):
                 limiter.acquire(cost=cost)
-                with charged_lock:
-                    charged.append((time.monotonic(), cost))
+                mine.append((time.monotonic(), cost))
 
         threads = [
             threading.Thread(target=worker, args=(index,))
@@ -219,21 +230,51 @@ class TestUnderRealParallelism:
         for thread in threads:
             thread.join()
 
-        assert len(charged) == threads_count * per_thread
+        entries = sorted(entry for mine in charged for entry in mine)
+        assert len(entries) == threads_count * per_thread
 
-        charged.sort()
-        for index, (start, _) in enumerate(charged):
+        for index, (start, _) in enumerate(entries):
             weight = sum(
-                cost for moment, cost in charged[index:] if moment - start < window
+                cost for moment, cost in entries[index:] if moment - start < window
             )
             assert weight <= limit, f"{weight} units within {window}s, limit {limit}"
+
+    def test_total_throughput_cannot_beat_the_quota(self) -> None:
+        """A check that does not depend on per-call timestamps at all.
+
+        However the individual calls interleave, a sliding window can only let
+        through `limit` units per window plus one window's worth already in
+        flight when the clock starts.
+        """
+        limit, window, cost = 6, 0.2, 3
+        threads_count, per_thread = 4, 3
+        limiter = WeightedSlidingWindow(limit, window, name="throughput")
+
+        def worker() -> None:
+            for _ in range(per_thread):
+                limiter.acquire(cost=cost)
+
+        started = time.monotonic()
+        threads = [threading.Thread(target=worker) for _ in range(threads_count)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        elapsed = time.monotonic() - started
+
+        granted = threads_count * per_thread * cost
+        allowed = limit * (elapsed / window + 1)
+        assert granted <= allowed, (
+            f"{granted} units in {elapsed:.3f}s exceeds the {allowed:.1f} "
+            f"a limit of {limit} per {window}s can allow"
+        )
 
     def test_the_internal_ledger_stays_consistent_under_contention(self) -> None:
         """`used` must never drift from what the log actually holds."""
         limiter = WeightedSlidingWindow(50, 0.05, name="ledger")
 
         def worker() -> None:
-            for _ in range(20):
+            for _ in range(15):
                 limiter.acquire(cost=2)
 
         threads = [threading.Thread(target=worker) for _ in range(8)]

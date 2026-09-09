@@ -3,6 +3,7 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from googleapis_without_429.core import WeightedSlidingWindow
+from googleapis_without_429.limiter import QuotaLimiter
 from googleapis_without_429.profiles import DRIVE, SHEETS, ApiProfile
 from googleapis_without_429.session import RateLimitedSession
 
@@ -15,6 +16,7 @@ __all__ = [
     "DRIVE",
     "SHEETS",
     "ApiProfile",
+    "QuotaLimiter",
     "RateLimitedSession",
     "WeightedSlidingWindow",
     "__version__",

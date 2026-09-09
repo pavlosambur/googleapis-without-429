@@ -11,7 +11,7 @@ from google.auth.transport.requests import AuthorizedSession
 from requests import PreparedRequest, Response
 
 from googleapis_without_429.backoff import equal_jitter_delay, parse_retry_after
-from googleapis_without_429.core import WeightedSlidingWindow
+from googleapis_without_429.limiter import QuotaLimiter
 from googleapis_without_429.profiles import DRIVE, SHEETS, ApiProfile
 
 __all__ = ["RateLimitedSession"]
@@ -70,32 +70,14 @@ class RateLimitedSession(AuthorizedSession):
         # google-auth ships no annotations for AuthorizedSession.__init__.
         super().__init__(credentials, **kwargs)  # type: ignore[no-untyped-call]
 
-        if not profiles:
-            raise ValueError("at least one profile is required")
         if max_attempts < 1:
             raise ValueError(f"max_attempts must be at least 1, got {max_attempts!r}")
 
-        names = [profile.name for profile in profiles]
-        duplicates = {name for name in names if names.count(name) > 1}
-        if duplicates:
-            raise ValueError(
-                f"profile names must be unique, got duplicates: {sorted(duplicates)}"
-            )
-
-        # A list rather than a dict keyed by host: www.googleapis.com serves
-        # more than one API, so the host alone no longer picks a profile.
-        self._profiles = tuple(profiles)
-        self._buckets = {
-            (profile.name, bucket): WeightedSlidingWindow(
-                limit,
-                window,
-                name=f"{profile.name}:{bucket}",
-                clock=clock,
-                sleeper=sleeper,
-            )
-            for profile in profiles
-            for bucket, limit in profile.limits.items()
-        }
+        #: The quota buckets behind this session. Public on purpose: it is the
+        #: escape hatch for pacing a call this session does not make itself.
+        self.limiter = QuotaLimiter(
+            profiles, window=window, clock=clock, sleeper=sleeper
+        )
         self._max_attempts = max_attempts
         self._backoff_base = backoff_base
         self._backoff_cap = backoff_cap
@@ -106,22 +88,14 @@ class RateLimitedSession(AuthorizedSession):
     def send(self, request: PreparedRequest, **kwargs: object) -> Response:
         """Pace the request against its profile, then retry a 429."""
         url = urlparse(request.url or "")
-        profile = self._profile_for(url.netloc, url.path)
+        profile = self.limiter.profile_for(url.netloc, url.path)
         if profile is None:
             return super().send(request, **kwargs)  # type: ignore[arg-type]
 
         bucket_name, cost = profile.resolve(
             request.method or "GET", url.path, url.query
         )
-        try:
-            bucket = self._buckets[(profile.name, bucket_name)]
-        except KeyError:
-            known = ", ".join(sorted(profile.limits))
-            raise ValueError(
-                f"{profile.name}: resolve() returned unknown bucket "
-                f"{bucket_name!r} for {request.method} {url.path}; "
-                f"this profile defines: {known}"
-            ) from None
+        bucket = self.limiter.bucket(profile, bucket_name)
 
         attempts = 0
         while True:
@@ -138,13 +112,6 @@ class RateLimitedSession(AuthorizedSession):
                 # own client (gspread, say) turns it into its own exception.
                 return response
             self._sleep(self._delay_after_429(attempts - 1, response))
-
-    def _profile_for(self, host: str, path: str) -> ApiProfile | None:
-        """The first profile claiming this host and path, if any."""
-        for profile in self._profiles:
-            if profile.claims(host, path):
-                return profile
-        return None
 
     def _delay_after_429(self, attempt: int, response: Response) -> float:
         """Prefer the server's instruction, fall back on our own backoff."""

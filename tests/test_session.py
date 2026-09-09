@@ -200,7 +200,7 @@ class TestRetryOn429:
 
         session.send(prepared("GET", SHEET_URL))
 
-        bucket = session._buckets[("sheets", "read")]
+        bucket = session.limiter.bucket(SHEETS, "read")
         assert bucket.used == 3
 
     def test_a_retry_after_header_wins_over_our_own_backoff(
@@ -273,7 +273,7 @@ class TestMultipleProfiles:
         session.send(prepared("GET", "https://www.googleapis.com/drive/v3/files"))
         session.send(prepared("GET", "https://www.googleapis.com/calendar/v3/x"))
 
-        assert session._buckets[("drive", "units")].used == 100, "the Drive list"
+        assert session.limiter.bucket(DRIVE, "units").used == 100, "the Drive list"
         # The Calendar call belonged to no profile and was left alone.
 
     def test_duplicate_profile_names_are_rejected(self, clock: FakeClock) -> None:
@@ -283,4 +283,4 @@ class TestMultipleProfiles:
 
     def test_the_default_profiles_cover_sheets_and_drive(self) -> None:
         session = RateLimitedSession(AnonymousCredentials())
-        assert {name for name, _ in session._buckets} == {"sheets", "drive"}
+        assert {p.name for p in session.limiter.profiles} == {"sheets", "drive"}

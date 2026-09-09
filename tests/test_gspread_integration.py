@@ -76,8 +76,11 @@ def session(clock: FakeClock) -> RateLimitedSession:
     )
 
 
+PROFILES = {"sheets": SHEETS, "drive": DRIVE}
+
+
 def bucket(session: RateLimitedSession, profile: str, name: str):
-    return session._buckets[(profile, name)]
+    return session.limiter.bucket(PROFILES[profile], name)
 
 
 class TestDropInAdoption:

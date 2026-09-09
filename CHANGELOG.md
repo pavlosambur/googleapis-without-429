@@ -27,5 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   requests in two, so a listing costs twenty times a single item read.
 - Profiles can claim path prefixes, since `www.googleapis.com` serves several
   APIs and a host alone no longer identifies which quota applies.
+- `QuotaLimiter`: the quota buckets on their own, for code that does not go
+  through a `requests` session. `limiter.limit(SHEETS, "write")` works both as
+  a context manager and as a decorator, and `limiter.bucket(...)` exposes the
+  underlying window for anything this library does not model. A session's own
+  buckets are reachable through `session.limiter`.
 
 [Unreleased]: https://github.com/pavlosambur/googleapis-without-429/commits/main/

@@ -13,18 +13,22 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Protocol
 
-__all__ = ["equal_jitter_delay", "parse_retry_after"]
+__all__ = ["RandomSource", "equal_jitter_delay", "parse_retry_after"]
 
 
-class _Random(Protocol):
-    def uniform(self, a: float, b: float) -> float: ...
+class RandomSource(Protocol):
+    """Anything offering ``uniform``: the :mod:`random` module, or a Random."""
+
+    def uniform(self, a: float, b: float) -> float:
+        """Return a float between ``a`` and ``b``."""
+        ...
 
 
 def equal_jitter_delay(
     attempt: int,
     base: float = 1.0,
     cap: float = 60.0,
-    rng: _Random = random,
+    rng: RandomSource = random,
 ) -> float:
     """Return the delay before retry number ``attempt`` (zero-based).
 

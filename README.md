@@ -86,11 +86,15 @@ allow fewer calls than Google would, never more. But the boundary mismatch is
 real, so a retry on 429 is built in and on by default:
 
 ```python
+from googleapis_without_429 import RateLimitedSession, RetryPolicy
+
 RateLimitedSession(
     credentials,
-    max_attempts=5,  # total tries per request, including the first
-    backoff_base=1.0,  # ceiling for the first retry delay, in seconds
-    backoff_cap=60.0,  # the ceiling stops doubling here
+    retry=RetryPolicy(
+        max_attempts=5,  # total tries per request, including the first
+        backoff_base=1.0,  # ceiling for the first retry delay, in seconds
+        backoff_cap=60.0,  # the ceiling stops doubling here
+    ),
 )
 ```
 
@@ -120,6 +124,30 @@ status code alone cannot decide. The reason string in the response body can:
 
 A body that is missing, not JSON, or shaped unexpectedly is treated as *not* a
 rate limit, so a malformed response can never turn into a retry loop.
+
+### Server errors, and the write you do not want twice
+
+Google's guidance also recommends backoff for `500`, `502`, `503` and `504`,
+and those are retried too — but **only for methods that are safe to repeat**.
+
+A 5xx means the server may have applied your change and then failed to answer.
+Repeating a `GET` costs nothing; repeating `values:append` adds the row twice,
+and a duplicated row is a worse outcome than an error you can see. So `GET`,
+`HEAD`, `OPTIONS`, `PUT` and `DELETE` are retried on 5xx, and `POST` is not.
+
+Rate limits are different: a 429 or a rate-limit 403 means the request was
+*rejected*, not half-applied, so those are retried whatever the method.
+
+If your POSTs genuinely are safe to repeat, say so:
+
+```python
+from googleapis_without_429 import RetryPolicy
+
+RetryPolicy(retry_unsafe_server_errors=True)
+```
+
+Or switch server-error retries off entirely with
+`RetryPolicy(retry_server_errors=False)`.
 
 ## Adjusting the limits
 

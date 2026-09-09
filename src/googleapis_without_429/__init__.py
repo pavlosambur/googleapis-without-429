@@ -6,6 +6,7 @@ from googleapis_without_429.core import WeightedSlidingWindow
 from googleapis_without_429.errors import QuotaTimeoutError, is_rate_limited
 from googleapis_without_429.limiter import QuotaLimiter
 from googleapis_without_429.profiles import DRIVE, SHEETS, ApiProfile
+from googleapis_without_429.retry import DEFAULT_RETRY, RetryPolicy
 from googleapis_without_429.session import RateLimitedSession
 
 try:
@@ -14,12 +15,14 @@ except PackageNotFoundError:  # pragma: no cover - only when running from source
     __version__ = "0.0.0.dev0"
 
 __all__ = [
+    "DEFAULT_RETRY",
     "DRIVE",
     "SHEETS",
     "ApiProfile",
     "QuotaLimiter",
     "QuotaTimeoutError",
     "RateLimitedSession",
+    "RetryPolicy",
     "WeightedSlidingWindow",
     "__version__",
     "is_rate_limited",

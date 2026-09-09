@@ -26,6 +26,22 @@ Nothing yet.
   like a hung program, so being able to see the waiting is not optional.
 - Waiting is logged at `DEBUG` and retries at `INFO`, under the
   `googleapis_without_429` logger.
+- Server errors (500, 502, 503, 504) are retried, but only for methods that are
+  safe to repeat. A 5xx leaves it unknown whether the request took effect, so
+  repeating `values:append` could add the row twice — `GET`, `HEAD`, `OPTIONS`,
+  `PUT` and `DELETE` are retried and `POST` is not. Rate limits are unaffected:
+  a 429 rejected the request outright, so it is retried whatever the method.
+  `RetryPolicy(retry_unsafe_server_errors=True)` opts POST in;
+  `RetryPolicy(retry_server_errors=False)` opts everything out.
+
+### Changed
+
+- Retry settings moved from four constructor arguments to a `RetryPolicy`
+  object: `RateLimitedSession(credentials, retry=RetryPolicy(max_attempts=3))`.
+  The old `max_attempts`, `backoff_base`, `backoff_cap` and `retry_after_cap`
+  arguments are gone. Adding server-error handling would have made six loose
+  arguments, and the policy is also the natural place for the next question of
+  this kind.
 
 ## [0.2.0] - 2026-09-09
 

@@ -20,6 +20,7 @@ from googleapis_without_429 import (
     QuotaLimiter,
     QuotaTimeoutError,
     RateLimitedSession,
+    RetryPolicy,
 )
 
 from .conftest import FakeClock
@@ -81,9 +82,9 @@ class TestConstruction:
         with pytest.raises(ValueError, match="at least one profile"):
             RateLimitedSession(AnonymousCredentials(), [])
 
-    def test_rejects_a_zero_attempt_budget(self, clock: FakeClock) -> None:
+    def test_rejects_a_zero_attempt_budget(self) -> None:
         with pytest.raises(ValueError, match="max_attempts must be at least 1"):
-            make_session(clock, max_attempts=0)
+            RetryPolicy(max_attempts=0)
 
 
 class TestThrottling:
@@ -181,7 +182,7 @@ class TestRetryOn429:
     ) -> None:
         """Returning it lets the caller's own client raise its own error."""
         sent = transport([response(429) for _ in range(3)])
-        session = make_session(clock, max_attempts=3)
+        session = make_session(clock, retry=RetryPolicy(max_attempts=3))
 
         result = session.send(prepared("GET", SHEET_URL))
 
@@ -193,7 +194,7 @@ class TestRetryOn429:
         self, clock: FakeClock, transport
     ) -> None:
         sent = transport([response(429)])
-        session = make_session(clock, max_attempts=1)
+        session = make_session(clock, retry=RetryPolicy(max_attempts=1))
 
         assert session.send(prepared("GET", SHEET_URL)).status_code == 429
         assert len(sent) == 1
@@ -224,7 +225,7 @@ class TestRetryOn429:
     def test_an_absurd_retry_after_is_capped(self, clock: FakeClock, transport) -> None:
         """A proxy asking for an hour should not park the process for an hour."""
         transport([response(429, **{"Retry-After": "3600"}), response(200)])
-        session = make_session(clock, retry_after_cap=30.0)
+        session = make_session(clock, retry=RetryPolicy(retry_after_cap=30.0))
 
         session.send(prepared("GET", SHEET_URL))
 
@@ -234,7 +235,7 @@ class TestRetryOn429:
         self, clock: FakeClock, transport
     ) -> None:
         transport([response(429, **{"Retry-After": "whenever"}), response(200)])
-        session = make_session(clock, backoff_base=4.0)
+        session = make_session(clock, retry=RetryPolicy(backoff_base=4.0))
 
         session.send(prepared("GET", SHEET_URL))
 
@@ -444,3 +445,35 @@ class TestAcquireTimeout:
 
         with pytest.raises(QuotaTimeoutError):
             session.send(prepared("GET", SHEET_URL))
+
+
+class TestServerErrorsThroughTheSession:
+    def test_a_503_on_a_read_is_retried(self, clock: FakeClock, transport) -> None:
+        sent = transport([response(503), response(200)])
+        session = make_session(clock)
+
+        assert session.send(prepared("GET", SHEET_URL)).status_code == 200
+        assert len(sent) == 2
+
+    def test_a_503_on_an_append_is_not_retried(
+        self, clock: FakeClock, transport
+    ) -> None:
+        """Repeating the POST could add the row a second time."""
+        sent = transport([response(503)])
+        session = make_session(clock)
+
+        result = session.send(prepared("POST", f"{VALUES_URL}:append"))
+
+        assert result.status_code == 503
+        assert len(sent) == 1
+        assert clock.slept == []
+
+    def test_a_429_on_an_append_is_still_retried(
+        self, clock: FakeClock, transport
+    ) -> None:
+        """A rate limit rejected the write outright, so repeating is safe."""
+        sent = transport([response(429), response(200)])
+        session = make_session(clock)
+
+        assert session.send(prepared("POST", f"{VALUES_URL}:append")).status_code == 200
+        assert len(sent) == 2

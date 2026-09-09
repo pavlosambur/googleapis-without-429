@@ -58,6 +58,7 @@ and blocks the call that would go over, instead of letting Google reject it.
 |---|---|---|
 | Sheets | 60 reads + 60 writes per minute | separate buckets; every call costs 1, batches included |
 | Drive | 325,000 quota units per minute | one shared bucket; a call costs 5 to 200 units |
+| Gmail | 6,000 quota units per minute | one shared bucket; a call costs 1 to 100 units |
 
 Together these cover [gspread](https://github.com/burnash/gspread) completely —
 which needs both, since Sheets moves the cell data while Drive owns the file:
@@ -70,10 +71,36 @@ which needs both, since Sheets moves the cell data while Drive owns the file:
 | `open("title")`, `openall`, `list_spreadsheet_files` | Drive, then Sheets |
 | `create`, `copy`, `del_spreadsheet`, `share` | Drive |
 
-Nothing else is covered yet: Gmail, Calendar and Docs have no profile. A
+Calendar and Docs have no profile yet. A
 request to any host without a profile passes through untouched — including
 the token refresh your credentials perform, which must not eat the quota of the
 API you are actually calling.
+
+### Gmail is priced per method
+
+Gmail is the reason this library counts weight rather than calls. Its methods
+differ by a factor of a hundred, and nothing in the path tells you which is
+which:
+
+| Call | Units |
+|---|---|
+| `labels.get` | 1 |
+| `messages.list` | 5 |
+| `messages.get` | **20** |
+| `threads.get` | **40** |
+| `messages.send` | **100** |
+
+So the Gmail profile carries an explicit table of all 63 methods Google
+publishes a price for, assembled from the usage-limits page (which gives costs
+per method name) and the discovery document (which gives the path for each
+name). Sixteen further methods — the `settings.cse` and S/MIME families — have
+no published price at all; those are charged 100, the most any documented method
+costs, so an unknown call can only be over-counted. Under-counting would mean
+sailing past the quota into the 429 this library exists to prevent.
+
+In practice that means sixty `messages.send` calls fill a whole minute's
+per-user quota, and the sixty-first waits. That is Google's arithmetic, not
+ours: 60 × 100 = 6,000.
 
 ## This does not remove the need for retries
 

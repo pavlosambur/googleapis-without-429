@@ -6,7 +6,7 @@ from googleapis_without_429.core import WeightedSlidingWindow
 from googleapis_without_429.errors import QuotaTimeoutError, is_rate_limited
 from googleapis_without_429.httplib2_transport import RateLimitedHttp
 from googleapis_without_429.limiter import QuotaLimiter
-from googleapis_without_429.profiles import DRIVE, SHEETS, ApiProfile
+from googleapis_without_429.profiles import DRIVE, GMAIL, SHEETS, ApiProfile
 from googleapis_without_429.retry import DEFAULT_RETRY, RetryPolicy
 from googleapis_without_429.session import RateLimitedSession
 
@@ -18,6 +18,7 @@ except PackageNotFoundError:  # pragma: no cover - only when running from source
 __all__ = [
     "DEFAULT_RETRY",
     "DRIVE",
+    "GMAIL",
     "SHEETS",
     "ApiProfile",
     "QuotaLimiter",

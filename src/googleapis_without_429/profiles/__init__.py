@@ -11,14 +11,17 @@ from googleapis_without_429.profiles.base import (
     Resolver,
 )
 from googleapis_without_429.profiles.drive import DRIVE, resolve_drive
+from googleapis_without_429.profiles.gmail import GMAIL, resolve_gmail
 from googleapis_without_429.profiles.sheets import SHEETS, resolve_sheets
 
 __all__ = [
     "DRIVE",
+    "GMAIL",
     "READ_HTTP_METHODS",
     "SHEETS",
     "ApiProfile",
     "Resolver",
     "resolve_drive",
+    "resolve_gmail",
     "resolve_sheets",
 ]

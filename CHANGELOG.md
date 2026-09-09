@@ -7,7 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- `GMAIL` profile, and Gmail is now paced by default alongside Sheets and
+  Drive. Gmail prices every method individually, from 1 unit for `labels.get`
+  to 100 for `messages.send`, so the profile carries an explicit table rather
+  than inferring a cost from the shape of the path as the Drive profile does —
+  `messages.get` costs four times `messages.list` and nothing in either path
+  says so. The table is assembled from the published usage limits and the
+  discovery document (revision 20260903), and every one of the API's 79 methods
+  is covered by a test.
+- Methods Google publishes no price for — the `settings.cse` and S/MIME
+  families, sixteen in all — are charged `GMAIL_UNPRICED_COST` (100), the most
+  any documented method costs, so an unknown call can only be over-counted.
+
+### Changed
+
+- `profiles` is now a package rather than a module. The public import path is
+  unchanged.
 
 ## [0.3.0] - 2026-09-09
 

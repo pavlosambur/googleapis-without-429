@@ -13,7 +13,7 @@ from requests import PreparedRequest, Response
 
 from googleapis_without_429.backoff import RandomSource
 from googleapis_without_429.limiter import QuotaLimiter
-from googleapis_without_429.profiles import DRIVE, SHEETS, ApiProfile
+from googleapis_without_429.profiles import DRIVE, GMAIL, SHEETS, ApiProfile
 from googleapis_without_429.retry import DEFAULT_RETRY, RetryPolicy
 
 __all__ = ["RateLimitedSession"]
@@ -36,9 +36,10 @@ class RateLimitedSession(AuthorizedSession):
 
     Args:
         credentials: Google credentials, as for ``AuthorizedSession``.
-        profiles: APIs to pace. Defaults to Sheets and Drive, which together
-            cover gspread -- it reaches Drive to create, delete, share or
-            look up a spreadsheet by title. Ignored when ``limiter`` is given.
+        profiles: APIs to pace. Defaults to Sheets, Drive and Gmail. The
+            first two together cover gspread, which reaches Drive to create,
+            delete, share or look up a spreadsheet by title. Ignored when
+            ``limiter`` is given.
         limiter: An existing limiter to share. Pass the same one to several
             sessions and they draw on a single quota, which is what threaded
             code needs: a session per thread with a limiter each would multiply
@@ -62,7 +63,7 @@ class RateLimitedSession(AuthorizedSession):
     def __init__(  # noqa: PLR0913 - tuning knobs, all keyword-only with defaults
         self,
         credentials: object,
-        profiles: Sequence[ApiProfile] = (SHEETS, DRIVE),
+        profiles: Sequence[ApiProfile] = (SHEETS, DRIVE, GMAIL),
         *,
         limiter: QuotaLimiter | None = None,
         acquire_timeout: float | None = None,

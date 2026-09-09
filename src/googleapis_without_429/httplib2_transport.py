@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 from googleapis_without_429.backoff import RandomSource
 from googleapis_without_429.errors import reasons_in
 from googleapis_without_429.limiter import QuotaLimiter
-from googleapis_without_429.profiles import DRIVE, SHEETS, ApiProfile
+from googleapis_without_429.profiles import DRIVE, GMAIL, SHEETS, ApiProfile
 from googleapis_without_429.retry import DEFAULT_RETRY, RetryPolicy
 
 __all__ = ["HttpTransport", "RateLimitedHttp"]
@@ -66,7 +66,8 @@ class RateLimitedHttp:
 
     Args:
         http: The transport to wrap, usually an ``AuthorizedHttp``.
-        profiles: APIs to pace. Ignored when ``limiter`` is given.
+        profiles: APIs to pace. Defaults to Sheets, Drive and Gmail.
+            Ignored when ``limiter`` is given.
         limiter: An existing limiter to share, so a session and this adapter
             can draw on one quota instead of two.
         retry: How failures are handled.
@@ -80,7 +81,7 @@ class RateLimitedHttp:
     def __init__(  # noqa: PLR0913 - tuning knobs, all keyword-only with defaults
         self,
         http: HttpTransport,
-        profiles: Sequence[ApiProfile] = (SHEETS, DRIVE),
+        profiles: Sequence[ApiProfile] = (SHEETS, DRIVE, GMAIL),
         *,
         limiter: QuotaLimiter | None = None,
         retry: RetryPolicy = DEFAULT_RETRY,

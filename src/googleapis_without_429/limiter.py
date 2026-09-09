@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from urllib.parse import urlparse
 
 from googleapis_without_429.core import WeightedSlidingWindow, WindowStats
-from googleapis_without_429.profiles import DRIVE, SHEETS, ApiProfile
+from googleapis_without_429.profiles import DRIVE, GMAIL, SHEETS, ApiProfile
 
 __all__ = ["QuotaLimiter"]
 
@@ -23,7 +23,7 @@ class QuotaLimiter:
     """Holds one sliding window per bucket of each profile it is given.
 
     Args:
-        profiles: APIs to meter. Defaults to Sheets and Drive.
+        profiles: APIs to meter. Defaults to Sheets, Drive and Gmail.
         window: Overrides every profile's own window, in seconds. Leave unset
             so each profile uses the window its API is actually metered over.
         clock: Monotonic time source. Injectable for testing.
@@ -36,7 +36,7 @@ class QuotaLimiter:
 
     def __init__(
         self,
-        profiles: Sequence[ApiProfile] = (SHEETS, DRIVE),
+        profiles: Sequence[ApiProfile] = (SHEETS, DRIVE, GMAIL),
         *,
         window: float | None = None,
         clock: Callable[[], float] = time.monotonic,

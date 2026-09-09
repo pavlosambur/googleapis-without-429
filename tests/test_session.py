@@ -290,9 +290,13 @@ class TestMultipleProfiles:
         with pytest.raises(ValueError, match="must be unique"):
             RateLimitedSession(AnonymousCredentials(), [SHEETS, SHEETS])
 
-    def test_the_default_profiles_cover_sheets_and_drive(self) -> None:
+    def test_the_default_profiles_cover_every_shipped_api(self) -> None:
         session = RateLimitedSession(AnonymousCredentials())
-        assert {p.name for p in session.limiter.profiles} == {"sheets", "drive"}
+        assert {p.name for p in session.limiter.profiles} == {
+            "sheets",
+            "drive",
+            "gmail",
+        }
 
 
 class TestDriveAnswersWith403:

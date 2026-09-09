@@ -27,7 +27,9 @@ def python_blocks() -> list[str]:
 
 def is_self_contained(block: str) -> bool:
     """A block that imports what it needs and needs no real credentials."""
-    return "from googleapis_without_429 import" in block and "credentials" not in block
+    if "from googleapis_without_429 import" not in block:
+        return False
+    return not re.search(r"\bcreds\b|\bcredentials\b", block)
 
 
 class TestExamples:
@@ -137,10 +139,15 @@ class TestNamesTheReaderWillTry:
     def test_every_imported_name_is_actually_exported(self) -> None:
         imported: set[str] = set()
         for block in python_blocks():
-            for line in block.splitlines():
-                match = re.match(r"from googleapis_without_429 import (.+)", line)
-                if match:
-                    imported.update(part.strip() for part in match.group(1).split(","))
+            # Parsed rather than matched line by line: ruff format wraps a long
+            # import across several lines in parentheses, and a line-wise regex
+            # then reads "(" as an imported name.
+            for node in ast.walk(ast.parse(block)):
+                if (
+                    isinstance(node, ast.ImportFrom)
+                    and node.module == "googleapis_without_429"
+                ):
+                    imported.update(alias.name for alias in node.names)
 
         assert imported
         missing = sorted(name for name in imported if not hasattr(package, name))

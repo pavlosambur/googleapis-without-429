@@ -403,14 +403,16 @@ from googleapis_without_429 import rate_limited_session
 
 Session = rate_limited_session(AiohttpSession)
 
-async with Aiogoogle(session_factory=Session, user_creds=creds) as google:
-    sheets = await google.discover("sheets", "v4")
-    for row in rows:
-        await google.as_user(
-            sheets.spreadsheets.values.append(
-                spreadsheetId=sheet_id, range="A1", json={"values": [row]}
+
+async def append_rows(creds, sheet_id, rows):
+    async with Aiogoogle(session_factory=Session, user_creds=creds) as google:
+        sheets = await google.discover("sheets", "v4")
+        for row in rows:
+            await google.as_user(
+                sheets.spreadsheets.values.append(
+                    spreadsheetId=sheet_id, range="A1", json={"values": [row]}
+                )
             )
-        )
 ```
 
 Same profiles, same quotas, same retry rules. `aiogoogle` is not a dependency —

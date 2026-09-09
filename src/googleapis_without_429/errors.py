@@ -17,7 +17,38 @@ from typing import Any
 
 from requests import RequestException, Response
 
-__all__ = ["RETRYABLE_REASONS", "is_rate_limited", "response_reasons"]
+__all__ = [
+    "RETRYABLE_REASONS",
+    "QuotaTimeoutError",
+    "is_rate_limited",
+    "response_reasons",
+]
+
+
+class QuotaTimeoutError(TimeoutError):
+    """Raised when quota did not free up within the time allowed.
+
+    Subclasses the built-in :class:`TimeoutError`, so code that already
+    handles timeouts catches this without knowing the library exists.
+
+    Attributes:
+        name: Which bucket was being waited on.
+        cost: What the call was going to consume.
+        waited: Seconds actually spent waiting before giving up.
+        timeout: The limit that was exceeded.
+    """
+
+    def __init__(self, name: str, cost: int, waited: float, timeout: float) -> None:
+        label = f"{name}: " if name else ""
+        super().__init__(
+            f"{label}waited {waited:.3f}s for {cost} unit(s) of quota, "
+            f"giving up after {timeout:.3f}s"
+        )
+        self.name = name
+        self.cost = cost
+        self.waited = waited
+        self.timeout = timeout
+
 
 TOO_MANY_REQUESTS = 429
 FORBIDDEN = 403

@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
-from googleapis_without_429 import DRIVE, SHEETS, ApiProfile, QuotaLimiter
+from googleapis_without_429 import (
+    DRIVE,
+    SHEETS,
+    ApiProfile,
+    QuotaLimiter,
+    QuotaTimeoutError,
+)
 from googleapis_without_429.profiles import resolve_sheets
 
 from .conftest import FakeClock
@@ -209,3 +217,70 @@ class TestPerProfileWindow:
                 resolve=resolve_sheets,
                 window=0,
             )
+
+
+class TestObservability:
+    """A limiter that works looks like a hung process. It must be visible."""
+
+    def test_stats_start_empty_and_count_grants(self, clock: FakeClock) -> None:
+        limiter = make_limiter(clock)
+        assert limiter.stats()["sheets:read"].granted == 0
+
+        limiter.acquire(SHEETS, "read")
+        limiter.acquire(SHEETS, "read")
+
+        stats = limiter.stats()["sheets:read"]
+        assert stats.granted == 2
+        assert stats.waits == 0
+        assert stats.wait_seconds == 0.0
+
+    def test_waiting_is_counted_and_timed(self, clock: FakeClock) -> None:
+        limiter = make_limiter(clock, read=1, write=1)
+        limiter.acquire(SHEETS, "read")
+        limiter.acquire(SHEETS, "read")  # this one waits a full window
+
+        stats = limiter.stats()["sheets:read"]
+        assert stats.granted == 2
+        assert stats.waits == 1
+        assert stats.wait_seconds == pytest.approx(60.0)
+        assert stats.average_wait == pytest.approx(60.0)
+
+    def test_timeouts_are_counted_separately(self, clock: FakeClock) -> None:
+        limiter = make_limiter(clock, read=1, write=1)
+        limiter.acquire(SHEETS, "read")
+
+        with pytest.raises(QuotaTimeoutError):
+            limiter.acquire(SHEETS, "read", timeout=1.0)
+
+        stats = limiter.stats()["sheets:read"]
+        assert stats.timeouts == 1
+        assert stats.granted == 1, "a timed-out call was never granted"
+
+    def test_average_wait_is_zero_when_nothing_waited(self, clock: FakeClock) -> None:
+        limiter = make_limiter(clock)
+        limiter.acquire(SHEETS, "read")
+        assert limiter.stats()["sheets:read"].average_wait == 0.0
+
+    def test_each_bucket_is_counted_on_its_own(self, clock: FakeClock) -> None:
+        limiter = make_limiter(clock)
+        limiter.acquire(SHEETS, "read")
+        limiter.acquire(SHEETS, "write")
+        limiter.acquire(SHEETS, "write")
+
+        stats = limiter.stats()
+        assert stats["sheets:read"].granted == 1
+        assert stats["sheets:write"].granted == 2
+
+    def test_waiting_is_logged(
+        self, clock: FakeClock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Someone debugging a stalled job needs a trace, not silence."""
+        limiter = make_limiter(clock, read=1, write=1)
+        limiter.acquire(SHEETS, "read")
+
+        with caplog.at_level(logging.DEBUG, logger="googleapis_without_429.core"):
+            limiter.acquire(SHEETS, "read")
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("quota exhausted" in message for message in messages)
+        assert any("sheets:read" in message for message in messages)

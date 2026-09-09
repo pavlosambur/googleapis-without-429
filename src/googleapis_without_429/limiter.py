@@ -13,7 +13,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from urllib.parse import urlparse
 
-from googleapis_without_429.core import WeightedSlidingWindow
+from googleapis_without_429.core import WeightedSlidingWindow, WindowStats
 from googleapis_without_429.profiles import DRIVE, SHEETS, ApiProfile
 
 __all__ = ["QuotaLimiter"]
@@ -71,6 +71,18 @@ class QuotaLimiter:
         names = ", ".join(profile.name for profile in self.profiles)
         return f"<{type(self).__name__} [{names}]>"
 
+    def stats(self) -> dict[str, WindowStats]:
+        """Counters for every bucket, keyed by ``"profile:bucket"``.
+
+        Useful at the end of a job, or from a health endpoint: a bucket with
+        many waits and a long total is telling you the limit is the bottleneck,
+        and one with none is telling you it is not.
+        """
+        return {
+            f"{name}:{bucket}": window.stats
+            for (name, bucket), window in self._buckets.items()
+        }
+
     def profile_for(self, host: str, path: str) -> ApiProfile | None:
         """The first profile claiming this host and path, if any."""
         for profile in self.profiles:
@@ -103,16 +115,39 @@ class QuotaLimiter:
                 f"this profile defines: {known_buckets}"
             ) from None
 
-    def acquire(self, profile: ApiProfile, bucket: str, cost: int = 1) -> float:
+    def acquire(
+        self,
+        profile: ApiProfile,
+        bucket: str,
+        cost: int = 1,
+        timeout: float | None = None,
+    ) -> float:
         """Block until ``cost`` fits in that bucket, then consume it.
+
+        Args:
+            profile: Which API the call belongs to.
+            bucket: Which of that profile's quotas it draws on.
+            cost: Weight of the call.
+            timeout: Seconds to wait before giving up. ``None`` waits
+                indefinitely.
 
         Returns:
             Seconds spent waiting. ``0.0`` means the call passed straight
             through, which is the common case below the quota.
-        """
-        return self.bucket(profile, bucket).acquire(cost)
 
-    def acquire_for(self, http_method: str, url: str) -> float:
+        Raises:
+            QuotaTimeoutError: If ``timeout`` elapsed with no room. No quota is
+                consumed in that case.
+        """
+        return self.bucket(profile, bucket).acquire(cost, timeout)
+
+    def try_acquire(self, profile: ApiProfile, bucket: str, cost: int = 1) -> bool:
+        """Consume quota only if it is free right now; never block."""
+        return self.bucket(profile, bucket).try_acquire(cost)
+
+    def acquire_for(
+        self, http_method: str, url: str, timeout: float | None = None
+    ) -> float:
         """Pace one request by its URL, letting the profile classify it.
 
         Returns ``0.0`` for a URL no profile claims, so calls to unrelated
@@ -123,10 +158,16 @@ class QuotaLimiter:
         if profile is None:
             return 0.0
         bucket, cost = profile.resolve(http_method, parts.path, parts.query)
-        return self.acquire(profile, bucket, cost)
+        return self.acquire(profile, bucket, cost, timeout)
 
     @contextmanager
-    def limit(self, profile: ApiProfile, bucket: str, cost: int = 1) -> Iterator[float]:
+    def limit(
+        self,
+        profile: ApiProfile,
+        bucket: str,
+        cost: int = 1,
+        timeout: float | None = None,
+    ) -> Iterator[float]:
         """Wait for quota, then run the block.
 
         Works as a context manager and, because of how `contextlib` builds it,
@@ -141,4 +182,4 @@ class QuotaLimiter:
         Yields:
             Seconds spent waiting, for the context-manager form.
         """
-        yield self.acquire(profile, bucket, cost)
+        yield self.acquire(profile, bucket, cost, timeout)

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "googleapis-without-429"
-version = "0.2.0"
+version = "0.3.0"
 description = "Drop-in transport for Google API clients that stays inside the quota instead of recovering from 429."
 readme = "README.md"
 requires-python = ">=3.10"

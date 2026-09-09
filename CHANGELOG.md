@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
+## [0.3.0] - 2026-09-09
+
+### Added
+
+- Waiting can be bounded. `acquire(timeout=...)` and
+  `RateLimitedSession(acquire_timeout=...)` raise `QuotaTimeoutError` rather
+  than blocking indefinitely, which is what anything serving a request needs:
+  a handler stalled for fifty seconds is indistinguishable from a hung process.
+  The error subclasses the built-in `TimeoutError`, and no quota is consumed
+  when it raises.
+- `try_acquire()` consumes quota only if it is free right now, for work that
+  can be skipped or queued instead of waited on.
+- Every bucket keeps counters — granted, waits, total wait time, timeouts —
+  reachable through `limiter.stats()`. A limiter doing its job looks exactly
+  like a hung program, so being able to see the waiting is not optional.
+- Waiting is logged at `DEBUG` and retries at `INFO`, under the
+  `googleapis_without_429` logger.
+
 ## [0.2.0] - 2026-09-09
 
 ### Fixed
@@ -65,6 +83,7 @@ Nothing yet.
   underlying window for anything this library does not model. A session's own
   buckets are reachable through `session.limiter`.
 
-[Unreleased]: https://github.com/pavlosambur/googleapis-without-429/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/pavlosambur/googleapis-without-429/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/pavlosambur/googleapis-without-429/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/pavlosambur/googleapis-without-429/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/pavlosambur/googleapis-without-429/releases/tag/v0.1.0

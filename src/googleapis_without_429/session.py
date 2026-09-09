@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import random
 import time
 from collections.abc import Callable, Sequence
@@ -16,6 +17,8 @@ from googleapis_without_429.limiter import QuotaLimiter
 from googleapis_without_429.profiles import DRIVE, SHEETS, ApiProfile
 
 __all__ = ["RateLimitedSession"]
+
+logger = logging.getLogger(__name__)
 
 
 class RateLimitedSession(AuthorizedSession):
@@ -40,6 +43,11 @@ class RateLimitedSession(AuthorizedSession):
             sessions and they draw on a single quota, which is what threaded
             code needs: a session per thread with a limiter each would multiply
             the quota by the number of threads and hit 429 immediately.
+        acquire_timeout: Seconds to wait for quota before raising
+            :class:`~googleapis_without_429.errors.QuotaTimeoutError`. ``None``
+            waits as long as the quota needs, which suits a batch job. Anything
+            serving a request should set it: a caller that stalls for a minute
+            with nothing in the log looks exactly like a hung process.
         window: Overrides every profile's own window, in seconds. Leave unset
             so each profile uses the window its API is metered over.
         max_attempts: Total tries per request, including the first. The retry
@@ -62,6 +70,7 @@ class RateLimitedSession(AuthorizedSession):
         profiles: Sequence[ApiProfile] = (SHEETS, DRIVE),
         *,
         limiter: QuotaLimiter | None = None,
+        acquire_timeout: float | None = None,
         window: float | None = None,
         max_attempts: int = 5,
         backoff_base: float = 1.0,
@@ -85,6 +94,7 @@ class RateLimitedSession(AuthorizedSession):
             profiles, window=window, clock=clock, sleeper=sleeper
         )
         self._max_attempts = max_attempts
+        self._acquire_timeout = acquire_timeout
         self._backoff_base = backoff_base
         self._backoff_cap = backoff_cap
         self._retry_after_cap = retry_after_cap
@@ -107,7 +117,7 @@ class RateLimitedSession(AuthorizedSession):
         while True:
             # Every try consumes quota, retries included -- a retry is a real
             # request to Google, not a replay of the first one.
-            bucket.acquire(cost)
+            bucket.acquire(cost, self._acquire_timeout)
             response = super().send(request, **kwargs)  # type: ignore[arg-type]
             attempts += 1
             if not is_rate_limited(response) or attempts >= self._max_attempts:
@@ -115,7 +125,20 @@ class RateLimitedSession(AuthorizedSession):
                 # caller's own client (gspread, say) turns it into its own
                 # exception.
                 return response
-            self._sleep(self._delay_after_limit(attempts - 1, response))
+            delay = self._delay_after_limit(attempts - 1, response)
+            # Worth an INFO: reaching this means our window and Google's did
+            # not line up, which is expected occasionally and a sign the limits
+            # need lowering if it happens constantly.
+            logger.info(
+                "%s %s: rate limited (%d), retrying in %.2fs (attempt %d of %d)",
+                request.method,
+                url.path,
+                response.status_code,
+                delay,
+                attempts + 1,
+                self._max_attempts,
+            )
+            self._sleep(delay)
 
     def _delay_after_limit(self, attempt: int, response: Response) -> float:
         """Prefer the server's instruction, fall back on our own backoff."""

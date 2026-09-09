@@ -14,7 +14,13 @@ import pytest
 import requests
 from google.auth.credentials import AnonymousCredentials
 
-from googleapis_without_429 import DRIVE, SHEETS, QuotaLimiter, RateLimitedSession
+from googleapis_without_429 import (
+    DRIVE,
+    SHEETS,
+    QuotaLimiter,
+    QuotaTimeoutError,
+    RateLimitedSession,
+)
 
 from .conftest import FakeClock
 
@@ -404,3 +410,37 @@ class TestSharingOneQuota:
 
         assert clock.slept == [], "each has its own quota, so neither waited"
         assert first.limiter is not second.limiter
+
+
+class TestAcquireTimeout:
+    """A request that would stall forever should be able to fail instead."""
+
+    def test_a_session_can_refuse_to_wait_indefinitely(
+        self, clock: FakeClock, transport
+    ) -> None:
+        transport([response()])
+        session = make_session(clock, read=1, acquire_timeout=5.0)
+
+        session.send(prepared("GET", SHEET_URL))
+
+        with pytest.raises(QuotaTimeoutError):
+            session.send(prepared("GET", SHEET_URL))
+
+    def test_without_a_timeout_it_waits(self, clock: FakeClock, transport) -> None:
+        transport([response() for _ in range(2)])
+        session = make_session(clock, read=1)
+
+        session.send(prepared("GET", SHEET_URL))
+        session.send(prepared("GET", SHEET_URL))
+
+        assert clock.now == pytest.approx(60.0)
+
+    def test_the_timeout_applies_to_retries_too(
+        self, clock: FakeClock, transport
+    ) -> None:
+        """A retry is a fresh acquire, so it is bounded by the same limit."""
+        transport([response(429), response(200)])
+        session = make_session(clock, read=1, acquire_timeout=5.0)
+
+        with pytest.raises(QuotaTimeoutError):
+            session.send(prepared("GET", SHEET_URL))

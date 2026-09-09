@@ -208,6 +208,79 @@ not make itself:
 session.limiter.bucket(SHEETS, "read").acquire()
 ```
 
+## Failing instead of waiting
+
+By default the limiter waits as long as the quota needs, which is right for a
+batch job and wrong for anything serving a request. A web handler that stalls
+for fifty seconds is indistinguishable from a hung process, and the caller
+would almost always rather have an error:
+
+```python
+from googleapis_without_429 import QuotaTimeoutError, RateLimitedSession
+
+session = RateLimitedSession(credentials, acquire_timeout=5.0)
+
+try:
+    session.get(url)
+except QuotaTimeoutError as exc:
+    print(f"gave up after {exc.waited:.1f}s waiting for {exc.cost} unit(s)")
+```
+
+`QuotaTimeoutError` subclasses the built-in `TimeoutError`, so code that
+already handles timeouts catches it without knowing this library exists. No
+quota is consumed when it raises.
+
+For work that can simply be skipped, ask instead of waiting:
+
+```python
+from googleapis_without_429 import SHEETS, QuotaLimiter
+
+limiter = QuotaLimiter()
+
+
+def refresh(spreadsheet_id):
+    if limiter.try_acquire(SHEETS, "read"):
+        return fetch_now(spreadsheet_id)
+    return serve_cached(spreadsheet_id)
+```
+
+## Seeing what it is doing
+
+A rate limiter that is working correctly looks exactly like a program that has
+hung. Every bucket therefore counts what it has done, with no configuration:
+
+```python
+for name, stats in session.limiter.stats().items():
+    print(
+        f"{name}: {stats.granted} granted, {stats.waits} waited "
+        f"{stats.wait_seconds:.1f}s total, {stats.timeouts} timed out"
+    )
+```
+
+```
+sheets:read: 240 granted, 3 waited 58.2s total, 0 timed out
+sheets:write: 60 granted, 0 waited 0.0s total, 0 timed out
+drive:units: 4 granted, 0 waited 0.0s total, 0 timed out
+```
+
+Read that as a diagnosis: reads are the bottleneck and writes are nowhere near
+their limit, so raising the read limit — if the project's real quota allows —
+is what would speed this job up.
+
+Waiting is logged at `DEBUG` and retries at `INFO`, under the
+`googleapis_without_429` logger:
+
+```python
+import logging
+
+logging.getLogger("googleapis_without_429").setLevel(logging.DEBUG)
+```
+
+```
+DEBUG googleapis_without_429.core: sheets:read: quota exhausted, waiting 12.480s for 1 unit(s)
+INFO  googleapis_without_429.session: GET /v4/spreadsheets/abc: rate limited (429), retrying in 1.42s (attempt 2 of 5)
+```
+
 ## Threads
 
 The limiter is thread-safe. `WeightedSlidingWindow` and `QuotaLimiter` are

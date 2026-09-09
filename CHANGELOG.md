@@ -34,6 +34,12 @@ Nothing yet.
   `RetryPolicy(retry_unsafe_server_errors=True)` opts POST in;
   `RetryPolicy(retry_server_errors=False)` opts everything out.
 
+- Callers are served in arrival order. Costs differ by a factor of forty on
+  Drive, and without a queue cheap calls keep the window just full enough that
+  an expensive one never fits. The queue trades a little throughput for the
+  guarantee that every call eventually runs; for Sheets, where every call costs
+  one, it changes nothing.
+
 ### Changed
 
 - Retry settings moved from four constructor arguments to a `RetryPolicy`

@@ -9,6 +9,7 @@ from collections import deque
 import pytest
 
 from googleapis_without_429.core import WeightedSlidingWindow
+from googleapis_without_429.errors import QuotaTimeoutError
 
 from .conftest import FakeClock
 
@@ -292,3 +293,131 @@ def test_repr_shows_usage_against_the_limit(clock: FakeClock) -> None:
 def test_repr_without_a_name(clock: FakeClock) -> None:
     limiter = WeightedSlidingWindow(5, 60.0, clock=clock.time, sleeper=clock.sleep)
     assert repr(limiter) == "<WeightedSlidingWindow 0/5 per 60.0s>"
+
+
+class TestFairness:
+    """An expensive call must not lose every race to cheap ones.
+
+    Drive prices a download at 200 units and a metadata read at 5. Without an
+    ordered queue, cheap calls keep the window just full enough that the
+    expensive one never fits, and it waits forever while everything else
+    proceeds.
+    """
+
+    def test_a_cheap_call_cannot_overtake_an_expensive_one(self) -> None:
+        """The precise shape of starvation: quota freeing up in pieces.
+
+        Ten units are consumed in two batches half a window apart, so capacity
+        returns in two instalments of five. A call needing all ten must wait
+        for both; a call needing one fits after the first. Without a queue the
+        cheap call takes that opening every time, and repeated cheap calls mean
+        the expensive one never runs.
+        """
+        window = 0.3
+        limiter = WeightedSlidingWindow(10, window, name="overtaking")
+        for _ in range(5):
+            limiter.acquire()
+        time.sleep(window / 2)
+        for _ in range(5):
+            limiter.acquire()
+
+        finished: list[str] = []
+
+        def expensive() -> None:
+            limiter.acquire(cost=10)
+            finished.append("expensive")
+
+        def cheap() -> None:
+            limiter.acquire(cost=1)
+            finished.append("cheap")
+
+        first = threading.Thread(target=expensive)
+        first.start()
+        # Let the expensive caller reach the queue before the cheap one asks,
+        # otherwise the test is about arrival order rather than fairness.
+        while not limiter._waiting:
+            time.sleep(0.001)
+
+        second = threading.Thread(target=cheap)
+        second.start()
+        first.join(timeout=5.0)
+        second.join(timeout=5.0)
+
+        assert finished == ["expensive", "cheap"], (
+            "the cheap call took the first opening and jumped the queue"
+        )
+
+    def test_an_expensive_call_is_not_starved_by_a_stream_of_cheap_ones(
+        self,
+    ) -> None:
+        """The same thing under continuous pressure rather than one overtake."""
+        limiter = WeightedSlidingWindow(10, 0.1, name="fairness")
+        stop = threading.Event()
+
+        def cheap() -> None:
+            while not stop.is_set():
+                limiter.acquire(cost=1)
+
+        threads = [threading.Thread(target=cheap, daemon=True) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        try:
+            waited = limiter.acquire(cost=10, timeout=5.0)
+        finally:
+            stop.set()
+            for thread in threads:
+                thread.join(timeout=2.0)
+
+        assert waited < 5.0
+
+    def test_callers_are_served_in_the_order_they_arrived(
+        self, clock: FakeClock
+    ) -> None:
+        """Single-threaded proof that the queue is consulted at all."""
+        limiter = WeightedSlidingWindow(
+            1, 60.0, name="order", clock=clock.time, sleeper=clock.sleep
+        )
+        limiter.acquire()
+
+        # A waiter joins the queue by attempting and timing out; the queue must
+        # be empty again afterwards so it cannot block anyone.
+        with pytest.raises(QuotaTimeoutError):
+            limiter.acquire(timeout=1.0)
+        assert list(limiter._waiting) == []
+
+    def test_a_caller_that_gives_up_does_not_block_the_queue(
+        self, clock: FakeClock
+    ) -> None:
+        """A departed waiter left in the queue would stall everyone behind it."""
+        limiter = WeightedSlidingWindow(
+            1, 60.0, name="departed", clock=clock.time, sleeper=clock.sleep
+        )
+        limiter.acquire()
+
+        with pytest.raises(QuotaTimeoutError):
+            limiter.acquire(timeout=5.0)
+
+        clock.advance(60.0)
+        assert limiter.acquire() == 0.0, "the next caller was not blocked"
+
+    def test_the_queue_is_empty_when_nothing_is_waiting(self, clock: FakeClock) -> None:
+        limiter = WeightedSlidingWindow(5, 60.0, clock=clock.time, sleeper=clock.sleep)
+        for _ in range(5):
+            limiter.acquire()
+        assert list(limiter._waiting) == []
+
+    def test_dropping_a_ticket_that_is_not_queued_is_harmless(
+        self, clock: FakeClock
+    ) -> None:
+        """Defensive: the cleanup path must not raise on a double removal."""
+        limiter = WeightedSlidingWindow(1, 60.0, clock=clock.time, sleeper=clock.sleep)
+        limiter._waiting.append((7, 1))
+
+        limiter._drop_ticket(99)
+
+        assert list(limiter._waiting) == [(7, 1)]
+
+    def test_an_empty_queue_yields_the_minimum_sleep(self, clock: FakeClock) -> None:
+        """Defensive: never return zero, which would spin."""
+        limiter = WeightedSlidingWindow(1, 60.0, clock=clock.time, sleeper=clock.sleep)
+        assert limiter._time_until_the_front_can_go(clock.time()) > 0

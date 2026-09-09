@@ -96,6 +96,12 @@ class WeightedSlidingWindow:
         self._log: deque[tuple[float, int]] = deque()
         self._used = 0
         self._lock = threading.Lock()
+        # Callers that had to wait, oldest first, as (ticket, cost). Without an
+        # order, an expensive call loses every race to cheap ones and may never
+        # run at all: a Drive download costs 200 units where a metadata read
+        # costs 5, so forty cheap calls can starve one expensive one forever.
+        self._waiting: deque[tuple[int, int]] = deque()
+        self._next_ticket = 0
         #: Counters describing what this window has done. Updated under the
         #: lock, so they stay consistent when threads run in parallel.
         self.stats = WindowStats()
@@ -149,58 +155,88 @@ class WeightedSlidingWindow:
 
         started = self._clock()
         deadline = None if timeout is None else started + timeout
+        return self._wait_for_room(cost, started, deadline, timeout)
+
+    def _wait_for_room(
+        self,
+        cost: int,
+        started: float,
+        deadline: float | None,
+        timeout: float | None,
+    ) -> float:
+        ticket: int | None = None
         waited_at_all = False
-        while True:
-            with self._lock:
-                now = self._clock()
-                self._expire(now)
-                if self._used + cost <= self.limit:
-                    self._log.append((now, cost))
-                    self._used += cost
-                    elapsed = now - started
-                    self.stats.granted += 1
-                    if waited_at_all:
-                        self.stats.waits += 1
-                        self.stats.wait_seconds += elapsed
+        try:
+            while True:
+                with self._lock:
+                    now = self._clock()
+                    self._expire(now)
+
+                    at_the_front = not self._waiting or (
+                        ticket is not None and self._waiting[0][0] == ticket
+                    )
+                    if at_the_front and self._used + cost <= self.limit:
+                        if ticket is not None:
+                            self._waiting.popleft()
+                            ticket = None
+                        self._log.append((now, cost))
+                        self._used += cost
+                        elapsed = now - started
+                        self.stats.granted += 1
+                        if waited_at_all:
+                            self.stats.waits += 1
+                            self.stats.wait_seconds += elapsed
+                            logger.debug(
+                                "%s: granted %d unit(s) after waiting %.3fs",
+                                self.name or "window",
+                                cost,
+                                elapsed,
+                            )
+                        return elapsed
+
+                    if ticket is None:
+                        ticket = self._next_ticket
+                        self._next_ticket += 1
+                        self._waiting.append((ticket, cost))
+
+                    sleep_for = self._time_until_the_front_can_go(now)
+
+                if deadline is not None:
+                    remaining = deadline - self._clock()
+                    if remaining <= 0:
+                        with self._lock:
+                            self.stats.timeouts += 1
                         logger.debug(
-                            "%s: granted %d unit(s) after waiting %.3fs",
+                            "%s: gave up waiting for %d unit(s) after %.3fs",
                             self.name or "window",
                             cost,
-                            elapsed,
+                            timeout or 0.0,
                         )
-                    return elapsed
-                sleep_for = self._time_until_room_for(cost, now)
+                        raise QuotaTimeoutError(
+                            self.name, cost, self._clock() - started, timeout or 0.0
+                        )
+                    # Never sleep past the deadline: waking up late to raise a
+                    # timeout would report a longer wait than was asked for.
+                    sleep_for = min(sleep_for, remaining)
 
-            if deadline is not None:
-                remaining = deadline - self._clock()
-                if remaining <= 0:
-                    with self._lock:
-                        self.stats.timeouts += 1
+                if not waited_at_all:
+                    waited_at_all = True
                     logger.debug(
-                        "%s: gave up waiting for %d unit(s) after %.3fs",
+                        "%s: quota exhausted, waiting %.3fs for %d unit(s)",
                         self.name or "window",
+                        sleep_for,
                         cost,
-                        timeout or 0.0,
                     )
-                    raise QuotaTimeoutError(
-                        self.name, cost, self._clock() - started, timeout or 0.0
-                    )
-                # Never sleep past the deadline: waking up late to raise a
-                # timeout would report a longer wait than was asked for.
-                sleep_for = min(sleep_for, remaining)
 
-            if not waited_at_all:
-                waited_at_all = True
-                logger.debug(
-                    "%s: quota exhausted, waiting %.3fs for %d unit(s)",
-                    self.name or "window",
-                    sleep_for,
-                    cost,
-                )
-
-            # Sleep outside the lock. Holding it here would serialise every
-            # other thread behind this one instead of rate limiting them.
-            self._sleep(max(sleep_for, _MIN_SLEEP))
+                # Sleep outside the lock. Holding it here would serialise every
+                # other thread behind this one instead of rate limiting them.
+                self._sleep(max(sleep_for, _MIN_SLEEP))
+        finally:
+            # Leaving the queue on timeout or on an unexpected error, so a
+            # departed caller cannot block everyone behind it forever.
+            if ticket is not None:
+                with self._lock:
+                    self._drop_ticket(ticket)
 
     def try_acquire(self, cost: int = 1) -> bool:
         """Consume ``cost`` units if they are available right now.
@@ -217,6 +253,29 @@ class WeightedSlidingWindow:
         except QuotaTimeoutError:
             return False
         return True
+
+    def _drop_ticket(self, ticket: int) -> None:
+        """Remove one waiter from the queue. Caller holds the lock."""
+        for index, (waiting_ticket, _) in enumerate(self._waiting):
+            if waiting_ticket == ticket:
+                del self._waiting[index]
+                return
+
+    def _time_until_the_front_can_go(self, now: float) -> float:
+        """Seconds until the caller at the head of the queue can proceed.
+
+        Everyone waits on the front of the queue rather than on their own cost.
+        A cheap call that could squeeze in right now must not: letting it past
+        is exactly the starvation the queue exists to prevent. Sleeping for its
+        own (zero) wait would also spin.
+        """
+        if not self._waiting:
+            return _MIN_SLEEP
+        _, head_cost = self._waiting[0]
+        if self._used + head_cost <= self.limit:
+            # There is room; the caller at the front simply has not woken yet.
+            return _MIN_SLEEP
+        return self._time_until_room_for(head_cost, now)
 
     def _expire(self, now: float) -> None:
         """Drop entries that have fallen out of the window. Caller holds the lock."""

@@ -309,6 +309,20 @@ DEBUG googleapis_without_429.core: sheets:read: quota exhausted, waiting 12.480s
 INFO  googleapis_without_429.session: GET /v4/spreadsheets/abc: rate limited (429), retrying in 1.42s (attempt 2 of 5)
 ```
 
+## Fairness
+
+Callers are served in the order they arrived. That matters as soon as calls
+cost different amounts: Drive charges 200 units for a download and 5 for a
+metadata read, so without an order the cheap calls keep the window just full
+enough that the expensive one never fits — and it waits forever while
+everything around it proceeds.
+
+The queue costs a little throughput, since a cheap call that would fit right
+now waits behind an expensive one that does not. That is the trade being made
+deliberately: a call that never runs is a worse outcome than one that runs
+slightly later. For Sheets it changes nothing at all, because every call there
+costs exactly one.
+
 ## Threads
 
 The limiter is thread-safe. `WeightedSlidingWindow` and `QuotaLimiter` are

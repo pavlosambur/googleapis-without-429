@@ -35,7 +35,11 @@ class RateLimitedSession(AuthorizedSession):
         credentials: Google credentials, as for ``AuthorizedSession``.
         profiles: APIs to pace. Defaults to Sheets and Drive, which together
             cover gspread -- it reaches Drive to create, delete, share or
-            look up a spreadsheet by title.
+            look up a spreadsheet by title. Ignored when ``limiter`` is given.
+        limiter: An existing limiter to share. Pass the same one to several
+            sessions and they draw on a single quota, which is what threaded
+            code needs: a session per thread with a limiter each would multiply
+            the quota by the number of threads and hit 429 immediately.
         window: Overrides every profile's own window, in seconds. Leave unset
             so each profile uses the window its API is metered over.
         max_attempts: Total tries per request, including the first. The retry
@@ -57,6 +61,7 @@ class RateLimitedSession(AuthorizedSession):
         credentials: object,
         profiles: Sequence[ApiProfile] = (SHEETS, DRIVE),
         *,
+        limiter: QuotaLimiter | None = None,
         window: float | None = None,
         max_attempts: int = 5,
         backoff_base: float = 1.0,
@@ -74,8 +79,9 @@ class RateLimitedSession(AuthorizedSession):
             raise ValueError(f"max_attempts must be at least 1, got {max_attempts!r}")
 
         #: The quota buckets behind this session. Public on purpose: it is the
-        #: escape hatch for pacing a call this session does not make itself.
-        self.limiter = QuotaLimiter(
+        #: escape hatch for pacing a call this session does not make itself,
+        #: and the object to hand to another session to share a quota with.
+        self.limiter = limiter or QuotaLimiter(
             profiles, window=window, clock=clock, sleeper=sleeper
         )
         self._max_attempts = max_attempts

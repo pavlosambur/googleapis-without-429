@@ -14,7 +14,7 @@ import pytest
 import requests
 from google.auth.credentials import AnonymousCredentials
 
-from googleapis_without_429 import DRIVE, SHEETS, RateLimitedSession
+from googleapis_without_429 import DRIVE, SHEETS, QuotaLimiter, RateLimitedSession
 
 from .conftest import FakeClock
 
@@ -364,3 +364,43 @@ class TestDriveAnswersWith403:
 
         # Three list calls at 100 units each.
         assert session.limiter.bucket(DRIVE, "units").used == 300
+
+
+class TestSharingOneQuota:
+    """A session per thread must not mean a quota per thread."""
+
+    def test_two_sessions_can_share_a_limiter(
+        self, clock: FakeClock, transport
+    ) -> None:
+        transport([response() for _ in range(3)])
+        shared = QuotaLimiter(
+            [SHEETS.with_limits(read=2, write=2)],
+            clock=clock.time,
+            sleeper=clock.sleep,
+        )
+        first = RateLimitedSession(AnonymousCredentials(), limiter=shared)
+        second = RateLimitedSession(AnonymousCredentials(), limiter=shared)
+
+        first.send(prepared("GET", SHEET_URL))
+        second.send(prepared("GET", SHEET_URL))
+
+        assert shared.bucket(SHEETS, "read").used == 2
+        assert first.limiter is second.limiter
+
+        # The third call is over the shared limit even though it is the second
+        # session's second call.
+        second.send(prepared("GET", SHEET_URL))
+        assert clock.now == pytest.approx(60.0)
+
+    def test_separate_sessions_keep_separate_quotas_by_default(
+        self, clock: FakeClock, transport
+    ) -> None:
+        transport([response() for _ in range(2)])
+        first = make_session(clock, read=1)
+        second = make_session(clock, read=1)
+
+        first.send(prepared("GET", SHEET_URL))
+        second.send(prepared("GET", SHEET_URL))
+
+        assert clock.slept == [], "each has its own quota, so neither waited"
+        assert first.limiter is not second.limiter

@@ -32,6 +32,10 @@ Nothing yet.
   `response_reasons` for code that needs the same classification elsewhere.
 - The test suite runs on the free-threaded build (3.14t) in CI, with tests that
   check the limiter's invariants under real parallelism.
+- `RateLimitedSession(..., limiter=...)` shares one set of quota buckets across
+  several sessions. Threaded code wants a session per thread, and without a
+  shared limiter each would keep its own quota, multiplying the effective limit
+  by the number of threads.
 
 ## [0.1.0] - 2026-09-09
 

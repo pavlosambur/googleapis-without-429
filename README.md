@@ -208,6 +208,40 @@ not make itself:
 session.limiter.bucket(SHEETS, "read").acquire()
 ```
 
+## Threads
+
+The limiter is thread-safe. `WeightedSlidingWindow` and `QuotaLimiter` are
+built for concurrent use and the test suite exercises them on the free-threaded
+build (3.14t) in CI, where threads really do run at the same instant.
+
+The session is a different matter: it inherits from `requests.Session`, whose
+documentation makes no thread-safety promise either way. The reliable shape is
+therefore **one session per thread, sharing a single limiter** — otherwise each
+session keeps its own quota and the effective limit is multiplied by the number
+of threads, which is how you hit 429 while believing you are being careful:
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+
+from googleapis_without_429 import QuotaLimiter, RateLimitedSession
+
+limiter = QuotaLimiter()  # one set of buckets for the whole program
+
+
+def fetch(spreadsheet_id):
+    session = RateLimitedSession(credentials, limiter=limiter)
+    return session.get(
+        f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}"
+    )
+
+
+with ThreadPoolExecutor(max_workers=8) as pool:
+    results = list(pool.map(fetch, spreadsheet_ids))
+```
+
+Every worker waits on the same quota, so eight threads consume the same 60
+reads a minute that one thread would.
+
 ## Adding an API
 
 A profile is data, not code: a host, a map of buckets to limits, and a function

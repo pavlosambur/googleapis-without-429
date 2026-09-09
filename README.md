@@ -60,8 +60,9 @@ and blocks the call that would go over, instead of letting Google reject it.
 | Drive | 325,000 quota units per minute | one shared bucket; a call costs 5 to 200 units |
 | Gmail | 6,000 quota units per minute | one shared bucket; a call costs 1 to 100 units |
 
-Together these cover [gspread](https://github.com/burnash/gspread) completely —
-which needs both, since Sheets moves the cell data while Drive owns the file:
+Sheets and Drive together cover [gspread](https://github.com/burnash/gspread)
+completely, since it needs both — Sheets moves the cell data while Drive owns
+the file:
 
 | gspread call | Goes to |
 |---|---|
@@ -71,10 +72,9 @@ which needs both, since Sheets moves the cell data while Drive owns the file:
 | `open("title")`, `openall`, `list_spreadsheet_files` | Drive, then Sheets |
 | `create`, `copy`, `del_spreadsheet`, `share` | Drive |
 
-Calendar and Docs have no profile yet. A
-request to any host without a profile passes through untouched — including
-the token refresh your credentials perform, which must not eat the quota of the
-API you are actually calling.
+Calendar and Docs have no profile yet. A request to any host without a profile
+passes through untouched — including the token refresh your credentials
+perform, which must not eat the quota of the API you are actually calling.
 
 ### Gmail is priced per method
 
@@ -235,40 +235,6 @@ session = RateLimitedSession(credentials, [DRIVE_LEGACY])
 The window belongs to the profile, not to the session, so a limiter can hold a
 per-minute quota and a per-100-seconds one at the same time.
 
-## Without a session
-
-If the calls are not made through a `requests` session — a hand-rolled client,
-a worker, an API this library has no adapter for — use the limiter directly. It
-is both a context manager and a decorator:
-
-```python
-from googleapis_without_429 import SHEETS, QuotaLimiter
-
-limiter = QuotaLimiter([SHEETS])
-
-
-@limiter.limit(SHEETS, "write")
-def push_batch(rows): ...
-
-
-with limiter.limit(SHEETS, "read"):
-    ...
-```
-
-And the raw window underneath, when nothing above fits:
-
-```python
-limiter.bucket(SHEETS, "write").acquire(cost=1)
-limiter.bucket(SHEETS, "write").used  # what is currently counted
-```
-
-A session exposes its own limiter the same way, so you can pace a call it does
-not make itself:
-
-```python
-session.limiter.bucket(SHEETS, "read").acquire()
-```
-
 ## google-api-python-client
 
 The official client does not take a `requests` session — it takes an
@@ -292,8 +258,8 @@ service.spreadsheets().values().append(
 Same profiles, same quotas, same retry rules. `httplib2` is not a dependency of
 this library: the adapter wraps whatever transport you hand it.
 
-If a program uses both clients, give them one limiter so they share a quota
-instead of each keeping its own:
+A program that uses more than one client should give them a single limiter, so
+they share one quota instead of each keeping its own:
 
 ```python
 from googleapis_without_429 import QuotaLimiter, RateLimitedHttp, RateLimitedSession
@@ -301,6 +267,97 @@ from googleapis_without_429 import QuotaLimiter, RateLimitedHttp, RateLimitedSes
 limiter = QuotaLimiter()
 session = RateLimitedSession(credentials, limiter=limiter)
 http = RateLimitedHttp(authorised_http, limiter=limiter)
+```
+
+## Async
+
+`aiogoogle` takes a session *class*, not an instance, so this ships a factory
+that wraps one:
+
+```python
+from aiogoogle.client import Aiogoogle
+from aiogoogle.sessions.aiohttp_session import AiohttpSession
+
+from googleapis_without_429 import rate_limited_session
+
+Session = rate_limited_session(AiohttpSession)
+
+
+async def append_rows(creds, sheet_id, rows):
+    async with Aiogoogle(session_factory=Session, user_creds=creds) as google:
+        sheets = await google.discover("sheets", "v4")
+        for row in rows:
+            await google.as_user(
+                sheets.spreadsheets.values.append(
+                    spreadsheetId=sheet_id, range="A1", json={"values": [row]}
+                )
+            )
+```
+
+Same profiles, same quotas, same retry rules. `aiogoogle` is not a dependency —
+the factory subclasses whatever session class you hand it.
+
+The quota lives in the returned class rather than in its instances, which
+matters here: `aiogoogle` builds a fresh session for every operation, so a
+per-instance limiter would hand each call its own full quota.
+
+Underneath, `acquire_async` shares its decision with `acquire`; only the waiting
+differs. Working out whether there is room takes microseconds under a plain
+lock, and an `asyncio.Lock` would be worse there, since it does not exclude
+other threads. So one limiter can be shared between threads and coroutines and
+they draw on a single quota:
+
+```python
+from googleapis_without_429 import (
+    QuotaLimiter,
+    RateLimitedSession,
+    rate_limited_session,
+)
+
+limiter = QuotaLimiter()
+session = RateLimitedSession(credentials, limiter=limiter)
+Session = rate_limited_session(AiohttpSession, limiter=limiter)
+```
+
+> **Not covered:** `gspread-asyncio` runs synchronous gspread in a thread pool
+> and builds its client without a session argument, so this cannot be dropped
+> into it.
+
+## Without a session
+
+If the calls are not made through a `requests` session — a hand-rolled client,
+a worker, an API this library has no adapter for — use the limiter directly. It
+is both a context manager and a decorator:
+
+```python
+from googleapis_without_429 import SHEETS, QuotaLimiter
+
+limiter = QuotaLimiter([SHEETS])
+
+
+@limiter.limit(SHEETS, "write")
+def push_batch(rows): ...
+
+
+with limiter.limit(SHEETS, "read"):
+    ...
+```
+
+Every one of those has an awaitable twin for asynchronous callers —
+`acquire_async`, `acquire_for_async` and `limit_async`, used the same way.
+
+And the raw window underneath, when nothing above fits:
+
+```python
+limiter.bucket(SHEETS, "write").acquire(cost=1)
+limiter.bucket(SHEETS, "write").used  # what is currently counted
+```
+
+A session exposes its own limiter the same way, so you can pace a call it does
+not make itself:
+
+```python
+session.limiter.bucket(SHEETS, "read").acquire()
 ```
 
 ## Failing instead of waiting
@@ -390,64 +447,6 @@ deliberately: a call that never runs is a worse outcome than one that runs
 slightly later. For Sheets it changes nothing at all, because every call there
 costs exactly one.
 
-## Async
-
-`aiogoogle` takes a session *class*, not an instance, so this ships a factory
-that wraps one:
-
-```python
-from aiogoogle.client import Aiogoogle
-from aiogoogle.sessions.aiohttp_session import AiohttpSession
-
-from googleapis_without_429 import rate_limited_session
-
-Session = rate_limited_session(AiohttpSession)
-
-
-async def append_rows(creds, sheet_id, rows):
-    async with Aiogoogle(session_factory=Session, user_creds=creds) as google:
-        sheets = await google.discover("sheets", "v4")
-        for row in rows:
-            await google.as_user(
-                sheets.spreadsheets.values.append(
-                    spreadsheetId=sheet_id, range="A1", json={"values": [row]}
-                )
-            )
-```
-
-Same profiles, same quotas, same retry rules. `aiogoogle` is not a dependency —
-the factory subclasses whatever session class you hand it.
-
-The quota lives in the returned class rather than in its instances, which
-matters here: `aiogoogle` builds a fresh session for every operation, so a
-per-instance limiter would hand each call its own full quota.
-
-Underneath, `acquire_async` shares its decision with `acquire`; only the waiting
-differs. Working out whether there is room takes microseconds under a plain
-lock, and an `asyncio.Lock` would be worse there, since it does not exclude
-other threads. So one limiter can be shared between threads and coroutines and
-they draw on a single quota:
-
-```python
-from googleapis_without_429 import (
-    QuotaLimiter,
-    RateLimitedSession,
-    rate_limited_session,
-)
-
-limiter = QuotaLimiter()
-session = RateLimitedSession(credentials, limiter=limiter)
-Session = rate_limited_session(AiohttpSession, limiter=limiter)
-```
-
-For code that calls an async API this library has no adapter for, the limiter
-has awaitable twins of everything: `acquire_async`, `acquire_for_async` and
-`limit_async`.
-
-> **Not covered:** `gspread-asyncio` runs synchronous gspread in a thread pool
-> and builds its client without a session argument, so this cannot be dropped
-> into it.
-
 ## Threads
 
 The limiter is thread-safe. `WeightedSlidingWindow` and `QuotaLimiter` are
@@ -534,9 +533,21 @@ pipeline. The test suite needs no credentials and makes no network calls.
 
 ## Roadmap
 
-- A Gmail profile — its quota units range from 2 to 100 per call, which is what
-  the weighted core was built for
-- Async support
+Both of the original roadmap items — a Gmail profile and async support — are
+done. What is left is written down honestly rather than promised:
+
+- **Calendar and Docs profiles.** A profile is data, so these are small; the
+  work is verifying each API's quotas against its own documentation rather than
+  guessing from a neighbour.
+- **A Drive profile for projects on the pre-May-2026 quota**
+  ([#1](https://github.com/pavlosambur/googleapis-without-429/issues/1)). That
+  scheme counted requests rather than weighted units, so it needs its own
+  profile — the machinery exists and is documented above. What is missing is a
+  figure nobody can verify without a project still on the old quota, and a
+  default that looks authoritative while being wrong is worse than none.
+- **Batch retries for the async adapter.** `aiogoogle` sends a batch
+  concurrently and raises a single error for the whole set, so today only single
+  requests are retried.
 
 ## License
 

@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="googleapis-without-429">
+  <title>googleapis-without-429</title>
+  <desc>A burst of requests on the left, paced evenly on the right, with the limiter between them.</desc>
+  <!-- Incoming burst: uneven, crowded. -->
+  <g fill="#64798A">
+    <rect x="5" y="17" width="3" height="30" rx="1.5"/>
+    <rect x="10.5" y="17" width="3" height="30" rx="1.5"/>
+    <rect x="16" y="17" width="3" height="30" rx="1.5"/>
+    <rect x="21.5" y="17" width="3" height="30" rx="1.5"/>
+  </g>
+  <!-- The limiter. -->
+  <rect x="29.5" y="8" width="3" height="48" rx="1.5" fill="#148C8C"/>
+  <!-- Leaving at a steady cadence. -->
+  <g fill="#148C8C">
+    <rect x="39" y="17" width="3" height="30" rx="1.5"/>
+    <rect x="48" y="17" width="3" height="30" rx="1.5"/>
+    <rect x="57" y="17" width="3" height="30" rx="1.5"/>
+  </g>
+</svg>

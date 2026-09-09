@@ -1,9 +1,16 @@
-# googleapis-without-429
+<p align="center">
+  <img src="https://raw.githubusercontent.com/pavlosambur/googleapis-without-429/main/docs/logo.svg"
+       alt="" width="76" height="76">
+</p>
 
-[![PyPI](https://img.shields.io/pypi/v/googleapis-without-429)](https://pypi.org/project/googleapis-without-429/)
-[![Python](https://img.shields.io/pypi/pyversions/googleapis-without-429)](https://pypi.org/project/googleapis-without-429/)
-[![CI](https://github.com/pavlosambur/googleapis-without-429/actions/workflows/ci.yml/badge.svg)](https://github.com/pavlosambur/googleapis-without-429/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+<h1 align="center">googleapis-without-429</h1>
+
+<p align="center">
+  <a href="https://pypi.org/project/googleapis-without-429/"><img alt="PyPI" src="https://img.shields.io/pypi/v/googleapis-without-429"></a>
+  <a href="https://pypi.org/project/googleapis-without-429/"><img alt="Python versions" src="https://img.shields.io/pypi/pyversions/googleapis-without-429"></a>
+  <a href="https://github.com/pavlosambur/googleapis-without-429/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/pavlosambur/googleapis-without-429/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
+</p>
 
 Stay inside Google API quotas instead of recovering from `429 Too many
 requests`. One argument, and the rest of your code is unchanged.

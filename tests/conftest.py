@@ -41,6 +41,10 @@ class FakeClock:
         self.slept.append(seconds)
         self.now += seconds
 
+    async def async_sleep(self, seconds: float) -> None:
+        """The awaitable twin, so async tests stay just as deterministic."""
+        self.sleep(seconds)
+
     def advance(self, seconds: float) -> None:
         self.now += seconds
 

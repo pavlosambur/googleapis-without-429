@@ -14,6 +14,7 @@ from one that will not clear until tomorrow.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any
 
 from requests import RequestException, Response
@@ -68,11 +69,12 @@ FORBIDDEN = 403
 RETRYABLE_REASONS = frozenset({"ratelimitexceeded", "userratelimitexceeded"})
 
 
-def reasons_in(body: bytes | str | None) -> set[str]:
+def reasons_in(body: bytes | str | Mapping[str, Any] | None) -> set[str]:
     """Lower-cased ``reason`` strings from a Google API error body.
 
-    Takes the raw body so it serves every transport: a `requests` response, an
-    httplib2 tuple, anything else that ends up carrying one of these.
+    Accepts the body in whatever form a transport hands it over: `requests` and
+    httplib2 give raw bytes, while `aiogoogle` has already parsed it into a
+    mapping. Taking both means one implementation serves every adapter.
 
     Returns an empty set for a body that is missing, not JSON, or not shaped
     like a Google error. Nothing here raises: a malformed body must not turn a
@@ -80,6 +82,8 @@ def reasons_in(body: bytes | str | None) -> set[str]:
     """
     if not body:
         return set()
+    if isinstance(body, Mapping):
+        return _reasons_from_payload(body)
     try:
         payload: Any = json.loads(body)
     except (ValueError, TypeError):

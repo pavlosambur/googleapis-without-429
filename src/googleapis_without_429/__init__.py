@@ -2,6 +2,7 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
+from googleapis_without_429.async_transport import rate_limited_session
 from googleapis_without_429.core import WeightedSlidingWindow
 from googleapis_without_429.errors import QuotaTimeoutError, is_rate_limited
 from googleapis_without_429.httplib2_transport import RateLimitedHttp
@@ -29,4 +30,5 @@ __all__ = [
     "WeightedSlidingWindow",
     "__version__",
     "is_rate_limited",
+    "rate_limited_session",
 ]

@@ -46,6 +46,7 @@ Changelog = "https://github.com/pavlosambur/googleapis-without-429/blob/main/CHA
 
 [dependency-groups]
 dev = [
+    "aiogoogle>=5.19.0",
     "google-api-python-client>=2.200.0",
     "google-auth-httplib2>=0.4.2",
     "gspread>=6.2.1",
@@ -53,6 +54,7 @@ dev = [
     "pillow>=12.3.0",
     "pre-commit>=4.6.2",
     "pytest>=8",
+    "pytest-asyncio>=1.4.0",
     "pytest-cov>=5",
     "ruff>=0.16.6",
     "types-requests>=2.33.0.20260906",
@@ -61,6 +63,8 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
+# Async tests need no decorator; the suite has no other async plugin.
+asyncio_mode = "auto"
 
 # An allow-list, not a deny-list. Hatchling falls back on .gitignore to decide
 # what belongs in an sdist, and .gitignore is not the only thing keeping files
@@ -149,6 +153,10 @@ ignore = [
     "PLR2004", # literal expectations are clearer than named constants here
 ]
 
+# This module builds a subclass of a client class it deliberately does not
+# import, so the request objects and the return value have no type it can name.
+"src/googleapis_without_429/async_transport.py" = ["ANN401"]
+
 "scripts/**" = [
     "T201",  # a command-line script reports through stdout; that is its interface
 ]
@@ -168,7 +176,13 @@ files = ["src", "tests", "scripts"]
 # Third-party clients this library adapts to, none of which ship type
 # information. Only the test suite imports them.
 [[tool.mypy.overrides]]
-module = ["gspread.*", "httplib2.*", "googleapiclient.*", "google_auth_httplib2.*"]
+module = [
+    "gspread.*",
+    "httplib2.*",
+    "googleapiclient.*",
+    "google_auth_httplib2.*",
+    "aiogoogle.*",
+]
 ignore_missing_imports = true
 
 # Test bodies stay strictly checked, but they are allowed to call the parts of

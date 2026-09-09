@@ -390,6 +390,62 @@ deliberately: a call that never runs is a worse outcome than one that runs
 slightly later. For Sheets it changes nothing at all, because every call there
 costs exactly one.
 
+## Async
+
+`aiogoogle` takes a session *class*, not an instance, so this ships a factory
+that wraps one:
+
+```python
+from aiogoogle.client import Aiogoogle
+from aiogoogle.sessions.aiohttp_session import AiohttpSession
+
+from googleapis_without_429 import rate_limited_session
+
+Session = rate_limited_session(AiohttpSession)
+
+async with Aiogoogle(session_factory=Session, user_creds=creds) as google:
+    sheets = await google.discover("sheets", "v4")
+    for row in rows:
+        await google.as_user(
+            sheets.spreadsheets.values.append(
+                spreadsheetId=sheet_id, range="A1", json={"values": [row]}
+            )
+        )
+```
+
+Same profiles, same quotas, same retry rules. `aiogoogle` is not a dependency —
+the factory subclasses whatever session class you hand it.
+
+The quota lives in the returned class rather than in its instances, which
+matters here: `aiogoogle` builds a fresh session for every operation, so a
+per-instance limiter would hand each call its own full quota.
+
+Underneath, `acquire_async` shares its decision with `acquire`; only the waiting
+differs. Working out whether there is room takes microseconds under a plain
+lock, and an `asyncio.Lock` would be worse there, since it does not exclude
+other threads. So one limiter can be shared between threads and coroutines and
+they draw on a single quota:
+
+```python
+from googleapis_without_429 import (
+    QuotaLimiter,
+    RateLimitedSession,
+    rate_limited_session,
+)
+
+limiter = QuotaLimiter()
+session = RateLimitedSession(credentials, limiter=limiter)
+Session = rate_limited_session(AiohttpSession, limiter=limiter)
+```
+
+For code that calls an async API this library has no adapter for, the limiter
+has awaitable twins of everything: `acquire_async`, `acquire_for_async` and
+`limit_async`.
+
+> **Not covered:** `gspread-asyncio` runs synchronous gspread in a thread pool
+> and builds its client without a session argument, so this cannot be dropped
+> into it.
+
 ## Threads
 
 The limiter is thread-safe. `WeightedSlidingWindow` and `QuotaLimiter` are

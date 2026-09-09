@@ -8,9 +8,16 @@ for yet.
 
 from __future__ import annotations
 
+import asyncio
 import time
-from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterator,
+    Sequence,
+)
+from contextlib import asynccontextmanager, contextmanager
 from urllib.parse import urlparse
 
 from googleapis_without_429.core import WeightedSlidingWindow, WindowStats
@@ -28,6 +35,8 @@ class QuotaLimiter:
             so each profile uses the window its API is actually metered over.
         clock: Monotonic time source. Injectable for testing.
         sleeper: Blocking sleep. Injectable for testing.
+        async_sleeper: Awaitable sleep, used by the ``_async`` methods.
+            Injectable for testing.
 
     Raises:
         ValueError: If no profiles are given, or two share a name. Buckets are
@@ -41,6 +50,7 @@ class QuotaLimiter:
         window: float | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
+        async_sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         if not profiles:
             raise ValueError("at least one profile is required")
@@ -62,6 +72,7 @@ class QuotaLimiter:
                 name=f"{profile.name}:{name}",
                 clock=clock,
                 sleeper=sleeper,
+                async_sleeper=async_sleeper,
             )
             for profile in profiles
             for name, limit in profile.limits.items()
@@ -145,6 +156,21 @@ class QuotaLimiter:
         """Consume quota only if it is free right now; never block."""
         return self.bucket(profile, bucket).try_acquire(cost)
 
+    async def acquire_async(
+        self,
+        profile: ApiProfile,
+        bucket: str,
+        cost: int = 1,
+        timeout: float | None = None,
+    ) -> float:
+        """Await until ``cost`` fits in that bucket, then consume it.
+
+        The awaitable twin of :meth:`acquire`, drawing on the same buckets, so
+        a program with both synchronous and asynchronous callers stays inside
+        one quota rather than two.
+        """
+        return await self.bucket(profile, bucket).acquire_async(cost, timeout)
+
     def acquire_for(
         self, http_method: str, url: str, timeout: float | None = None
     ) -> float:
@@ -159,6 +185,20 @@ class QuotaLimiter:
             return 0.0
         bucket, cost = profile.resolve(http_method, parts.path, parts.query)
         return self.acquire(profile, bucket, cost, timeout)
+
+    async def acquire_for_async(
+        self, http_method: str, url: str, timeout: float | None = None
+    ) -> float:
+        """Pace one request by its URL, awaiting rather than blocking.
+
+        Returns ``0.0`` for a URL no profile claims.
+        """
+        parts = urlparse(url)
+        profile = self.profile_for(parts.netloc, parts.path)
+        if profile is None:
+            return 0.0
+        bucket, cost = profile.resolve(http_method, parts.path, parts.query)
+        return await self.acquire_async(profile, bucket, cost, timeout)
 
     @contextmanager
     def limit(
@@ -183,3 +223,24 @@ class QuotaLimiter:
             Seconds spent waiting, for the context-manager form.
         """
         yield self.acquire(profile, bucket, cost, timeout)
+
+    @asynccontextmanager
+    async def limit_async(
+        self,
+        profile: ApiProfile,
+        bucket: str,
+        cost: int = 1,
+        timeout: float | None = None,
+    ) -> AsyncIterator[float]:
+        """Await quota, then run the block.
+
+        Works as an async context manager and, like its synchronous twin, as a
+        decorator on a coroutine function::
+
+            async with limiter.limit_async(SHEETS, "write"):
+                await client.post(url, json=payload)
+
+        Yields:
+            Seconds spent waiting.
+        """
+        yield await self.acquire_async(profile, bucket, cost, timeout)

@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   families, sixteen in all — are charged `GMAIL_UNPRICED_COST` (100), the most
   any documented method costs, so an unknown call can only be over-counted.
 
+- Asynchronous support. `acquire_async`, `acquire_for_async` and `limit_async`
+  await instead of blocking, and `rate_limited_session()` builds a paced
+  session class for `aiogoogle` — which takes a class rather than an instance,
+  so the quota lives in the class and every session it builds shares one.
+  `aiogoogle` is not a dependency; the factory wraps whatever class it is given.
+- A limiter can be shared between synchronous and asynchronous callers, since
+  both paths make the same decision and differ only in how they wait.
+
 ### Changed
 
 - `profiles` is now a package rather than a module. The public import path is

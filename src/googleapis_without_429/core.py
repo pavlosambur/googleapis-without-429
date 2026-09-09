@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from googleapis_without_429.errors import QuotaTimeoutError
@@ -49,6 +50,18 @@ class WindowStats:
 _MIN_SLEEP = 0.001
 
 
+@dataclass
+class _Attempt:
+    """One caller's in-progress attempt to take quota."""
+
+    cost: int
+    timeout: float | None
+    started: float
+    deadline: float | None
+    ticket: int | None = None
+    waited: bool = False
+
+
 class WeightedSlidingWindow:
     """Allow at most ``limit`` units of cost within any ``window`` seconds.
 
@@ -69,10 +82,13 @@ class WeightedSlidingWindow:
         window: Length of the window, in seconds.
         name: Optional label, used only in :func:`repr` and error messages.
         clock: Monotonic time source. Injectable for testing.
-        sleeper: Blocking sleep function. Injectable for testing.
+        sleeper: Blocking sleep function, used by :meth:`acquire`. Injectable
+            for testing.
+        async_sleeper: Awaitable sleep, used by :meth:`acquire_async`.
+            Injectable for testing.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - tuning knobs, all keyword-only with defaults
         self,
         limit: int,
         window: float = 60.0,
@@ -80,6 +96,7 @@ class WeightedSlidingWindow:
         *,
         clock: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
+        async_sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         if limit <= 0:
             raise ValueError(f"limit must be positive, got {limit!r}")
@@ -92,6 +109,7 @@ class WeightedSlidingWindow:
 
         self._clock = clock
         self._sleep = sleeper
+        self._async_sleep = async_sleeper
         # (timestamp, cost) pairs, oldest first.
         self._log: deque[tuple[float, int]] = deque()
         self._used = 0
@@ -141,102 +159,37 @@ class WeightedSlidingWindow:
             QuotaTimeoutError: If ``timeout`` elapsed before room appeared. No
                 quota is consumed in that case.
         """
-        if cost <= 0:
-            raise ValueError(f"cost must be positive, got {cost!r}")
-        if cost > self.limit:
-            label = f"{self.name}: " if self.name else ""
-            raise ValueError(
-                f"{label}cost {cost} exceeds limit {self.limit}; "
-                f"this call can never be permitted"
-            )
-
-        if timeout is not None and timeout < 0:
-            raise ValueError(f"timeout must not be negative, got {timeout!r}")
-
-        started = self._clock()
-        deadline = None if timeout is None else started + timeout
-        return self._wait_for_room(cost, started, deadline, timeout)
-
-    def _wait_for_room(
-        self,
-        cost: int,
-        started: float,
-        deadline: float | None,
-        timeout: float | None,
-    ) -> float:
-        ticket: int | None = None
-        waited_at_all = False
+        attempt = self._begin(cost, timeout)
         try:
             while True:
-                with self._lock:
-                    now = self._clock()
-                    self._expire(now)
-
-                    at_the_front = not self._waiting or (
-                        ticket is not None and self._waiting[0][0] == ticket
-                    )
-                    if at_the_front and self._used + cost <= self.limit:
-                        if ticket is not None:
-                            self._waiting.popleft()
-                            ticket = None
-                        self._log.append((now, cost))
-                        self._used += cost
-                        elapsed = now - started
-                        self.stats.granted += 1
-                        if waited_at_all:
-                            self.stats.waits += 1
-                            self.stats.wait_seconds += elapsed
-                            logger.debug(
-                                "%s: granted %d unit(s) after waiting %.3fs",
-                                self.name or "window",
-                                cost,
-                                elapsed,
-                            )
-                        return elapsed
-
-                    if ticket is None:
-                        ticket = self._next_ticket
-                        self._next_ticket += 1
-                        self._waiting.append((ticket, cost))
-
-                    sleep_for = self._time_until_the_front_can_go(now)
-
-                if deadline is not None:
-                    remaining = deadline - self._clock()
-                    if remaining <= 0:
-                        with self._lock:
-                            self.stats.timeouts += 1
-                        logger.debug(
-                            "%s: gave up waiting for %d unit(s) after %.3fs",
-                            self.name or "window",
-                            cost,
-                            timeout or 0.0,
-                        )
-                        raise QuotaTimeoutError(
-                            self.name, cost, self._clock() - started, timeout or 0.0
-                        )
-                    # Never sleep past the deadline: waking up late to raise a
-                    # timeout would report a longer wait than was asked for.
-                    sleep_for = min(sleep_for, remaining)
-
-                if not waited_at_all:
-                    waited_at_all = True
-                    logger.debug(
-                        "%s: quota exhausted, waiting %.3fs for %d unit(s)",
-                        self.name or "window",
-                        sleep_for,
-                        cost,
-                    )
-
-                # Sleep outside the lock. Holding it here would serialise every
-                # other thread behind this one instead of rate limiting them.
-                self._sleep(max(sleep_for, _MIN_SLEEP))
+                granted, pause = self._poll(attempt)
+                if granted is not None:
+                    return granted
+                self._sleep(pause)
         finally:
-            # Leaving the queue on timeout or on an unexpected error, so a
-            # departed caller cannot block everyone behind it forever.
-            if ticket is not None:
-                with self._lock:
-                    self._drop_ticket(ticket)
+            self._release(attempt)
+
+    async def acquire_async(self, cost: int = 1, timeout: float | None = None) -> float:
+        """Await until ``cost`` units fit in the window, then consume them.
+
+        The asynchronous twin of :meth:`acquire`, and the only difference
+        between them is how they wait. Deciding whether there is room takes a
+        few microseconds under a plain lock, so making that part asynchronous
+        would buy nothing -- and an ``asyncio.Lock`` would be worse, since it
+        does not exclude other threads. Only the sleeping needs to yield.
+
+        One window can therefore be shared between threads and coroutines at
+        once, and they draw on the same quota.
+        """
+        attempt = self._begin(cost, timeout)
+        try:
+            while True:
+                granted, pause = self._poll(attempt)
+                if granted is not None:
+                    return granted
+                await self._async_sleep(pause)
+        finally:
+            self._release(attempt)
 
     def try_acquire(self, cost: int = 1) -> bool:
         """Consume ``cost`` units if they are available right now.
@@ -253,6 +206,119 @@ class WeightedSlidingWindow:
         except QuotaTimeoutError:
             return False
         return True
+
+    def _begin(self, cost: int, timeout: float | None) -> _Attempt:
+        """Validate the request and open one attempt at taking quota."""
+        if cost <= 0:
+            raise ValueError(f"cost must be positive, got {cost!r}")
+        if cost > self.limit:
+            label = f"{self.name}: " if self.name else ""
+            raise ValueError(
+                f"{label}cost {cost} exceeds limit {self.limit}; "
+                f"this call can never be permitted"
+            )
+        if timeout is not None and timeout < 0:
+            raise ValueError(f"timeout must not be negative, got {timeout!r}")
+
+        started = self._clock()
+        return _Attempt(
+            cost=cost,
+            timeout=timeout,
+            started=started,
+            deadline=None if timeout is None else started + timeout,
+        )
+
+    def _poll(self, attempt: _Attempt) -> tuple[float | None, float]:
+        """Try once to take the quota this attempt is waiting for.
+
+        This is the sliding window's actual decision, and it is deliberately
+        separate from the waiting: the synchronous and asynchronous paths call
+        it identically and differ only in how they pause between calls. One
+        implementation of the rule, two ways of sleeping on it.
+
+        Returns:
+            ``(elapsed, 0.0)`` when the quota was consumed, or ``(None, pause)``
+            when the caller should sleep for ``pause`` seconds and try again.
+
+        Raises:
+            QuotaTimeoutError: If the deadline passed with no room.
+        """
+        with self._lock:
+            now = self._clock()
+            self._expire(now)
+
+            at_the_front = not self._waiting or (
+                attempt.ticket is not None and self._waiting[0][0] == attempt.ticket
+            )
+            if at_the_front and self._used + attempt.cost <= self.limit:
+                if attempt.ticket is not None:
+                    self._waiting.popleft()
+                    attempt.ticket = None
+                self._log.append((now, attempt.cost))
+                self._used += attempt.cost
+                elapsed = now - attempt.started
+                self.stats.granted += 1
+                if attempt.waited:
+                    self.stats.waits += 1
+                    self.stats.wait_seconds += elapsed
+                    logger.debug(
+                        "%s: granted %d unit(s) after waiting %.3fs",
+                        self.name or "window",
+                        attempt.cost,
+                        elapsed,
+                    )
+                return elapsed, 0.0
+
+            if attempt.ticket is None:
+                attempt.ticket = self._next_ticket
+                self._next_ticket += 1
+                self._waiting.append((attempt.ticket, attempt.cost))
+
+            pause = self._time_until_the_front_can_go(now)
+
+        if attempt.deadline is not None:
+            remaining = attempt.deadline - self._clock()
+            if remaining <= 0:
+                with self._lock:
+                    self.stats.timeouts += 1
+                logger.debug(
+                    "%s: gave up waiting for %d unit(s) after %.3fs",
+                    self.name or "window",
+                    attempt.cost,
+                    attempt.timeout or 0.0,
+                )
+                raise QuotaTimeoutError(
+                    self.name,
+                    attempt.cost,
+                    self._clock() - attempt.started,
+                    attempt.timeout or 0.0,
+                )
+            # Never sleep past the deadline: waking up late in order to raise a
+            # timeout would report a longer wait than was asked for.
+            pause = min(pause, remaining)
+
+        if not attempt.waited:
+            attempt.waited = True
+            logger.debug(
+                "%s: quota exhausted, waiting %.3fs for %d unit(s)",
+                self.name or "window",
+                pause,
+                attempt.cost,
+            )
+
+        return None, max(pause, _MIN_SLEEP)
+
+    def _release(self, attempt: _Attempt) -> None:
+        """Leave the queue, however the attempt ended.
+
+        A caller that timed out or raised must not leave a ticket behind: the
+        queue is ordered, so an abandoned ticket at the front blocks everyone
+        behind it forever.
+        """
+        if attempt.ticket is not None:
+            with self._lock:
+                self._drop_ticket(attempt.ticket)
+            attempt.ticket = None
 
     def _drop_ticket(self, ticket: int) -> None:
         """Remove one waiter from the queue. Caller holds the lock."""

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.4.0] - 2026-09-09
+
 ### Added
 
 - `GMAIL` profile, and Gmail is now paced by default alongside Sheets and
@@ -20,7 +24,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Methods Google publishes no price for — the `settings.cse` and S/MIME
   families, sixteen in all — are charged `GMAIL_UNPRICED_COST` (100), the most
   any documented method costs, so an unknown call can only be over-counted.
-
 - Asynchronous support. `acquire_async`, `acquire_for_async` and `limit_async`
   await instead of blocking, and `rate_limited_session()` builds a paced
   session class for `aiogoogle` — which takes a class rather than an instance,
@@ -135,7 +138,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   underlying window for anything this library does not model. A session's own
   buckets are reachable through `session.limiter`.
 
-[Unreleased]: https://github.com/pavlosambur/googleapis-without-429/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/pavlosambur/googleapis-without-429/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/pavlosambur/googleapis-without-429/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/pavlosambur/googleapis-without-429/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/pavlosambur/googleapis-without-429/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/pavlosambur/googleapis-without-429/releases/tag/v0.1.0

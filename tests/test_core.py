@@ -184,3 +184,64 @@ def test_repr_shows_usage_against_the_limit(clock: FakeClock) -> None:
 def test_repr_without_a_name(clock: FakeClock) -> None:
     limiter = WeightedSlidingWindow(5, 60.0, clock=clock.time, sleeper=clock.sleep)
     assert repr(limiter) == "<WeightedSlidingWindow 0/5 per 60.0s>"
+
+
+class TestUnderRealParallelism:
+    """Heavier contention, which is what a free-threaded build actually tests.
+
+    Under the GIL these threads interleave at bytecode boundaries; without it
+    they run at the same instant on different cores, so a missing lock shows up
+    here and nowhere else.
+    """
+
+    def test_mixed_costs_from_many_threads_stay_within_the_limit(self) -> None:
+        limit, window = 20, 0.1
+        costs = [1, 2, 3, 5]
+        threads_count, per_thread = 10, 8
+        limiter = WeightedSlidingWindow(limit, window, name="parallel")
+
+        charged: list[tuple[float, int]] = []
+        charged_lock = threading.Lock()
+
+        def worker(index: int) -> None:
+            cost = costs[index % len(costs)]
+            for _ in range(per_thread):
+                limiter.acquire(cost=cost)
+                with charged_lock:
+                    charged.append((time.monotonic(), cost))
+
+        threads = [
+            threading.Thread(target=worker, args=(index,))
+            for index in range(threads_count)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert len(charged) == threads_count * per_thread
+
+        charged.sort()
+        for index, (start, _) in enumerate(charged):
+            weight = sum(
+                cost for moment, cost in charged[index:] if moment - start < window
+            )
+            assert weight <= limit, f"{weight} units within {window}s, limit {limit}"
+
+    def test_the_internal_ledger_stays_consistent_under_contention(self) -> None:
+        """`used` must never drift from what the log actually holds."""
+        limiter = WeightedSlidingWindow(50, 0.05, name="ledger")
+
+        def worker() -> None:
+            for _ in range(20):
+                limiter.acquire(cost=2)
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        with limiter._lock:
+            assert limiter._used == sum(cost for _, cost in limiter._log)
+            assert limiter._used >= 0

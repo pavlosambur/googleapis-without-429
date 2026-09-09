@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
+## [0.2.0] - 2026-09-09
+
+### Fixed
+
+- Rate limits from the Drive API are now retried. Drive answers `403 Forbidden`
+  with a reason of `rateLimitExceeded` or `userRateLimitExceeded` where Sheets
+  answers `429`, so a retry watching only for 429 did nothing on exactly the
+  calls it was meant to protect. A 403 is retried only when its body names a
+  short-term limit: `dailyLimitExceeded` (which resets at midnight Pacific),
+  `sharingRateLimitExceeded`, and every permission error are returned
+  unchanged, since retrying a refusal turns a clear failure into a slow one.
+
+### Added
+
+- `window` is now a property of a profile rather than of the limiter, so one
+  limiter can hold a per-minute quota and a per-100-seconds quota at once. This
+  is what a project still on Drive's pre-May-2026 quota needs: that scheme
+  counted requests rather than weighted units, and no single number converts
+  between the two.
+- `googleapis_without_429.errors` exposes `is_rate_limited` and
+  `response_reasons` for code that needs the same classification elsewhere.
+- The test suite runs on the free-threaded build (3.14t) in CI, with tests that
+  check the limiter's invariants under real parallelism.
+
 ## [0.1.0] - 2026-09-09
 
 ### Added
@@ -37,5 +61,6 @@ Nothing yet.
   underlying window for anything this library does not model. A session's own
   buckets are reachable through `session.limiter`.
 
-[Unreleased]: https://github.com/pavlosambur/googleapis-without-429/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/pavlosambur/googleapis-without-429/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/pavlosambur/googleapis-without-429/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/pavlosambur/googleapis-without-429/releases/tag/v0.1.0

@@ -99,6 +99,28 @@ randomised. The guaranteed half matters — a 429 means the window has not
 reopened yet, so a delay that comes out near zero only buys another 429. A
 `Retry-After` header, if the server sends one, wins over the computed delay.
 
+### Drive answers 403, not 429
+
+Google is not consistent here, and it matters. Sheets returns `429` when you go
+too fast. **Drive returns `403 Forbidden`** for the same condition, and only
+sometimes 429 — so a retry that watches for 429 alone quietly does nothing on
+exactly the calls it was meant to protect.
+
+A 403 is also the ordinary answer for *you may not touch this file*, so the
+status code alone cannot decide. The reason string in the response body can:
+
+| Response | Retried | Why |
+|---|---|---|
+| `429` | yes | unambiguous |
+| `403` + `rateLimitExceeded` | yes | clears within the minute |
+| `403` + `userRateLimitExceeded` | yes | clears within the minute |
+| `403` + `dailyLimitExceeded` | **no** | resets at midnight Pacific; retrying achieves nothing |
+| `403` + `sharingRateLimitExceeded` | **no** | measured over far too long a period |
+| `403`, anything else | **no** | a permission error — retrying turns a clear failure into a slow one |
+
+A body that is missing, not JSON, or shaped unexpectedly is treated as *not* a
+rate limit, so a malformed response can never turn into a retry loop.
+
 ## Adjusting the limits
 
 The shipped numbers are Google's documented defaults, and defaults go stale.
@@ -125,6 +147,32 @@ quietly ignored, so a typo cannot leave you believing a limit was raised.
 
 Check what your project actually has in the Cloud Console under
 **APIs & Services → Quotas**; it can differ from the documentation.
+
+### When the metering model itself differs
+
+`with_limits` changes a number. Sometimes the whole model is different: Drive
+counted **requests** before 1 May 2026 and counts **weighted quota units**
+after, and a project that was already using the API kept the old scheme. There
+is no conversion between the two, so no single number bridges them — such a
+project needs its own profile, with its own `resolve` and its own window:
+
+```python
+from googleapis_without_429 import ApiProfile, RateLimitedSession
+
+DRIVE_LEGACY = ApiProfile(
+    name="drive",
+    host="www.googleapis.com",
+    path_prefixes=("/drive/", "/upload/drive/"),
+    limits={"queries": 12_000},  # your project's real figure, from the Console
+    resolve=lambda method, path, query: ("queries", 1),  # requests, not units
+    window=100.0,  # some legacy quotas are metered per 100 seconds
+)
+
+session = RateLimitedSession(credentials, [DRIVE_LEGACY])
+```
+
+The window belongs to the profile, not to the session, so a limiter can hold a
+per-minute quota and a per-100-seconds one at the same time.
 
 ## Without a session
 

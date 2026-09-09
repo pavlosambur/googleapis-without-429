@@ -24,7 +24,8 @@ class QuotaLimiter:
 
     Args:
         profiles: APIs to meter. Defaults to Sheets and Drive.
-        window: Length of the quota window in seconds. Google meters per minute.
+        window: Overrides every profile's own window, in seconds. Leave unset
+            so each profile uses the window its API is actually metered over.
         clock: Monotonic time source. Injectable for testing.
         sleeper: Blocking sleep. Injectable for testing.
 
@@ -37,7 +38,7 @@ class QuotaLimiter:
         self,
         profiles: Sequence[ApiProfile] = (SHEETS, DRIVE),
         *,
-        window: float = 60.0,
+        window: float | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -57,7 +58,7 @@ class QuotaLimiter:
         self._buckets = {
             (profile.name, name): WeightedSlidingWindow(
                 limit,
-                window,
+                profile.window if window is None else window,
                 name=f"{profile.name}:{name}",
                 clock=clock,
                 sleeper=sleeper,

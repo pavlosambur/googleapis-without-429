@@ -157,3 +157,55 @@ class TestCustomProfile:
         limiter.acquire_for("GET", "https://docs.googleapis.com/v1/documents/abc")
 
         assert limiter.bucket(docs, "read").used == 1
+
+
+class TestPerProfileWindow:
+    def test_a_profile_carries_its_own_window(self, clock: FakeClock) -> None:
+        """Not every Google quota is metered per minute."""
+        odd = ApiProfile(
+            name="odd",
+            host="odd.googleapis.com",
+            limits={"queries": 1},
+            resolve=resolve_sheets,
+            window=100.0,
+        )
+        limiter = QuotaLimiter([odd], clock=clock.time, sleeper=clock.sleep)
+
+        limiter.acquire(odd, "queries")
+        assert limiter.acquire(odd, "queries") == pytest.approx(100.0)
+
+    def test_profiles_with_different_windows_coexist(self, clock: FakeClock) -> None:
+        """A limiter may hold a per-minute quota and a per-100-seconds one."""
+        legacy = ApiProfile(
+            name="legacy",
+            host="legacy.googleapis.com",
+            limits={"queries": 1},
+            resolve=lambda method, path, query: ("queries", 1),
+            window=100.0,
+        )
+        limiter = QuotaLimiter(
+            [SHEETS.with_limits(read=1, write=1), legacy],
+            clock=clock.time,
+            sleeper=clock.sleep,
+        )
+
+        assert limiter.bucket(SHEETS, "read").window == 60.0
+        assert limiter.bucket(legacy, "queries").window == 100.0
+
+    def test_an_explicit_window_overrides_every_profile(self, clock: FakeClock) -> None:
+        limiter = QuotaLimiter(
+            [SHEETS, DRIVE], window=5.0, clock=clock.time, sleeper=clock.sleep
+        )
+
+        assert limiter.bucket(SHEETS, "read").window == 5.0
+        assert limiter.bucket(DRIVE, "units").window == 5.0
+
+    def test_a_non_positive_window_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="window must be positive"):
+            ApiProfile(
+                name="bad",
+                host="x",
+                limits={"queries": 1},
+                resolve=resolve_sheets,
+                window=0,
+            )

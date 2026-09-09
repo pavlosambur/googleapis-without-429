@@ -165,6 +165,10 @@ class ApiProfile:
             because ``www.googleapis.com`` hosts more than one API, so a host
             alone no longer identifies which quota applies. Empty means the
             profile claims the whole host.
+        window: Length of the quota window in seconds. Belongs to the profile
+            rather than to the limiter because APIs disagree about it: Google
+            meters most per minute, but some quotas are measured over 100
+            seconds, and a limiter may hold both at once.
     """
 
     name: str
@@ -172,10 +176,15 @@ class ApiProfile:
     limits: Mapping[str, int]
     resolve: Resolver
     path_prefixes: tuple[str, ...] = ()
+    window: float = 60.0
 
     def __post_init__(self) -> None:
         if not self.limits:
             raise ValueError(f"{self.name}: profile defines no limits")
+        if self.window <= 0:
+            raise ValueError(
+                f"{self.name}: window must be positive, got {self.window!r}"
+            )
         for bucket, limit in self.limits.items():
             if limit <= 0:
                 raise ValueError(
@@ -194,15 +203,19 @@ class ApiProfile:
     def with_limits(self, **overrides: int) -> ApiProfile:
         """Return a copy with some limits replaced.
 
-        Quotas are not a property of the API alone: they depend on the project,
-        on when it was created, and Google revises them. Drive's limits changed
-        on 1 May 2026, and projects that were already using it kept the old
-        ones -- expressed in a different unit, so no conversion exists.
-        Whatever this library ships as a default is therefore wrong for
-        somebody, and overriding has to be a first-class operation::
+        Quotas are not a property of the API alone: they depend on the project
+        and Google revises them, so whatever this library ships as a default is
+        eventually wrong for somebody::
 
             SHEETS.with_limits(read=300, write=300)
-            DRIVE.with_limits(units=12_000)
+            DRIVE.with_limits(units=1_000_000)
+
+        This changes a number, not a model. When an API meters something else
+        entirely -- Drive counted *requests* before 1 May 2026 and counts
+        weighted units after, over a window that need not be a minute -- build
+        a profile with its own ``resolve`` and ``window`` instead. There is no
+        conversion between the two, so pretending one number bridges them would
+        be worse than saying so.
 
         Raises:
             ValueError: If a name is not a bucket of this profile. A silently

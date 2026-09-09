@@ -7,6 +7,7 @@ retries -- and nothing else.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 
 import pytest
@@ -19,6 +20,7 @@ from .conftest import FakeClock
 
 SHEET_URL = "https://sheets.googleapis.com/v4/spreadsheets/abc123"
 VALUES_URL = f"{SHEET_URL}/values/A1:B2"
+DRIVE_URL = "https://www.googleapis.com/drive/v3/files"
 TOKEN_URL = "https://oauth2.googleapis.com/token"  # noqa: S105 - a URL, not a secret
 
 
@@ -284,3 +286,81 @@ class TestMultipleProfiles:
     def test_the_default_profiles_cover_sheets_and_drive(self) -> None:
         session = RateLimitedSession(AnonymousCredentials())
         assert {p.name for p in session.limiter.profiles} == {"sheets", "drive"}
+
+
+class TestDriveAnswersWith403:
+    """The case a 429-only retry silently missed: Drive rate-limits with 403."""
+
+    def google_error(self, status: int, reason: str) -> requests.Response:
+        made = requests.Response()
+        made.status_code = status
+        made._content = json.dumps(
+            {
+                "error": {
+                    "errors": [{"domain": "usageLimits", "reason": reason}],
+                    "code": status,
+                    "message": reason,
+                }
+            }
+        ).encode()
+        return made
+
+    def drive_session(self, clock: FakeClock, **kwargs: object) -> RateLimitedSession:
+        return RateLimitedSession(
+            AnonymousCredentials(),
+            [DRIVE],
+            clock=clock.time,
+            sleeper=clock.sleep,
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+    def test_a_rate_limit_403_is_retried(self, clock: FakeClock, transport) -> None:
+        sent = transport(
+            [self.google_error(403, "userRateLimitExceeded"), response(200)]
+        )
+        session = self.drive_session(clock)
+
+        result = session.send(prepared("GET", DRIVE_URL))
+
+        assert result.status_code == 200
+        assert len(sent) == 2
+        assert len(clock.slept) == 1
+
+    def test_a_permission_403_is_returned_immediately(
+        self, clock: FakeClock, transport
+    ) -> None:
+        """Retrying a refusal would turn a clear failure into a slow one."""
+        sent = transport([self.google_error(403, "insufficientFilePermissions")])
+        session = self.drive_session(clock)
+
+        result = session.send(prepared("GET", DRIVE_URL))
+
+        assert result.status_code == 403
+        assert len(sent) == 1
+        assert clock.slept == []
+
+    def test_a_daily_limit_403_is_not_retried(
+        self, clock: FakeClock, transport
+    ) -> None:
+        sent = transport([self.google_error(403, "dailyLimitExceeded")])
+        session = self.drive_session(clock)
+
+        assert session.send(prepared("GET", DRIVE_URL)).status_code == 403
+        assert len(sent) == 1
+
+    def test_every_retried_attempt_still_costs_quota(
+        self, clock: FakeClock, transport
+    ) -> None:
+        transport(
+            [
+                self.google_error(403, "rateLimitExceeded"),
+                self.google_error(403, "rateLimitExceeded"),
+                response(200),
+            ]
+        )
+        session = self.drive_session(clock)
+
+        session.send(prepared("GET", DRIVE_URL))
+
+        # Three list calls at 100 units each.
+        assert session.limiter.bucket(DRIVE, "units").used == 300

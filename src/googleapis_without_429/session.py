@@ -11,12 +11,11 @@ from google.auth.transport.requests import AuthorizedSession
 from requests import PreparedRequest, Response
 
 from googleapis_without_429.backoff import equal_jitter_delay, parse_retry_after
+from googleapis_without_429.errors import is_rate_limited
 from googleapis_without_429.limiter import QuotaLimiter
 from googleapis_without_429.profiles import DRIVE, SHEETS, ApiProfile
 
 __all__ = ["RateLimitedSession"]
-
-TOO_MANY_REQUESTS = 429
 
 
 class RateLimitedSession(AuthorizedSession):
@@ -37,7 +36,8 @@ class RateLimitedSession(AuthorizedSession):
         profiles: APIs to pace. Defaults to Sheets and Drive, which together
             cover gspread -- it reaches Drive to create, delete, share or
             look up a spreadsheet by title.
-        window: Length of the quota window in seconds. Google meters per minute.
+        window: Overrides every profile's own window, in seconds. Leave unset
+            so each profile uses the window its API is metered over.
         max_attempts: Total tries per request, including the first. The retry
             exists because our window and Google's are not aligned; see
             :mod:`googleapis_without_429.backoff`.
@@ -57,7 +57,7 @@ class RateLimitedSession(AuthorizedSession):
         credentials: object,
         profiles: Sequence[ApiProfile] = (SHEETS, DRIVE),
         *,
-        window: float = 60.0,
+        window: float | None = None,
         max_attempts: int = 5,
         backoff_base: float = 1.0,
         backoff_cap: float = 60.0,
@@ -104,16 +104,14 @@ class RateLimitedSession(AuthorizedSession):
             bucket.acquire(cost)
             response = super().send(request, **kwargs)  # type: ignore[arg-type]
             attempts += 1
-            if (
-                response.status_code != TOO_MANY_REQUESTS
-                or attempts >= self._max_attempts
-            ):
-                # A spent 429 is handed back rather than raised: the caller's
-                # own client (gspread, say) turns it into its own exception.
+            if not is_rate_limited(response) or attempts >= self._max_attempts:
+                # A spent rate limit is handed back rather than raised: the
+                # caller's own client (gspread, say) turns it into its own
+                # exception.
                 return response
-            self._sleep(self._delay_after_429(attempts - 1, response))
+            self._sleep(self._delay_after_limit(attempts - 1, response))
 
-    def _delay_after_429(self, attempt: int, response: Response) -> float:
+    def _delay_after_limit(self, attempt: int, response: Response) -> float:
         """Prefer the server's instruction, fall back on our own backoff."""
         hinted = parse_retry_after(response.headers.get("Retry-After"))
         if hinted is not None:

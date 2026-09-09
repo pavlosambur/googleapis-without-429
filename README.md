@@ -1,7 +1,8 @@
 # googleapis-without-429
 
+[![PyPI](https://img.shields.io/pypi/v/googleapis-without-429)](https://pypi.org/project/googleapis-without-429/)
+[![Python](https://img.shields.io/pypi/pyversions/googleapis-without-429)](https://pypi.org/project/googleapis-without-429/)
 [![CI](https://github.com/pavlosambur/googleapis-without-429/actions/workflows/ci.yml/badge.svg)](https://github.com/pavlosambur/googleapis-without-429/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)](https://github.com/pavlosambur/googleapis-without-429)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 Stay inside Google API quotas instead of recovering from `429 Too many

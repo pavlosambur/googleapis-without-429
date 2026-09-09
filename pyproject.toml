@@ -58,6 +58,31 @@ dev = [
 testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
 
+# An allow-list, not a deny-list. Hatchling falls back on .gitignore to decide
+# what belongs in an sdist, and .gitignore is not the only thing keeping files
+# out of this repository: internal notes live in .notes/ and are excluded
+# through .git/info/exclude, which no build backend reads. Naming what ships is
+# the only way that cannot leak by omission.
+[tool.hatch.build.targets.sdist]
+# Every pattern is anchored with a leading slash: these follow gitignore
+# semantics, where a bare "README.md" matches one in any subdirectory.
+include = [
+    "/src",
+    "/tests",
+    "/scripts",
+    "/.github",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/LICENSE",
+    "/Makefile",
+    "/pyproject.toml",
+    "/.pre-commit-config.yaml",
+    "/.gitignore",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/googleapis_without_429"]
+
 [tool.ruff]
 line-length = 88
 target-version = "py310"
@@ -120,6 +145,10 @@ ignore = [
     "PLR2004", # literal expectations are clearer than named constants here
 ]
 
+"scripts/**" = [
+    "T201",  # a command-line script reports through stdout; that is its interface
+]
+
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
@@ -130,7 +159,7 @@ known-first-party = ["googleapis_without_429"]
 python_version = "3.10"
 strict = true
 warn_unreachable = true
-files = ["src", "tests"]
+files = ["src", "tests", "scripts"]
 
 [[tool.mypy.overrides]]
 module = ["gspread.*"]

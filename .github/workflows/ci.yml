@@ -55,6 +55,9 @@ jobs:
         with:
           enable-cache: true
       - run: uv build
+      # Nothing in git stops a file from reaching an artefact: internal notes
+      # are excluded through .git/info/exclude, which no build backend reads.
+      - run: uv run --no-sync python scripts/check_sdist.py
       # Installing the built wheel into a clean environment is the only check
       # that catches a file missing from the package but present on disk.
       - name: install the built wheel into a clean environment

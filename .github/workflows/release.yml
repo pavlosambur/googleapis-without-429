@@ -41,6 +41,7 @@ jobs:
           echo "tag and version agree: $version"
 
       - run: uv build
+      - run: uv run --no-sync python scripts/check_sdist.py
       - run: uv run --isolated --no-project --with twine twine check dist/*
 
       - uses: actions/upload-artifact@v7

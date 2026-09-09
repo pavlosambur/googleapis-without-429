@@ -2,7 +2,23 @@
 
 from __future__ import annotations
 
+import sys
+import sysconfig
+
 import pytest
+
+
+def pytest_report_header() -> str:
+    """State the GIL situation in the run header.
+
+    The suite claims thread safety, and on a free-threaded build that claim
+    is actually exercised. Printing it means a log shows which kind of run
+    happened, rather than leaving it to be inferred from a job name.
+    """
+    if not sysconfig.get_config_var("Py_GIL_DISABLED"):
+        return "GIL: enabled (standard build)"
+    enabled = sys._is_gil_enabled()  # type: ignore[attr-defined]
+    return f"GIL: free-threaded build, currently {'enabled' if enabled else 'disabled'}"
 
 
 class FakeClock:

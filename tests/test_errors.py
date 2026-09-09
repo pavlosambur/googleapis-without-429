@@ -7,7 +7,7 @@ import json
 import pytest
 import requests
 
-from googleapis_without_429.errors import is_rate_limited, response_reasons
+from googleapis_without_429.errors import is_rate_limited, reasons_in, response_reasons
 
 
 def google_error(status: int, *reasons: str) -> requests.Response:
@@ -112,3 +112,24 @@ class TestMalformedBodies:
             "ratelimitexceeded",
             "userratelimitexceeded",
         }
+
+
+class TestReasonsFromRawBodies:
+    """The transport-independent parser, used by the httplib2 adapter."""
+
+    def test_a_well_formed_body(self) -> None:
+        body = json.dumps(
+            {"error": {"errors": [{"reason": "rateLimitExceeded"}]}}
+        ).encode()
+        assert reasons_in(body) == {"ratelimitexceeded"}
+
+    @pytest.mark.parametrize(
+        "body", [None, b"", "", b"not json", "<html>", b"\xff\xfe"]
+    )
+    def test_unusable_bodies_yield_nothing(self, body: bytes | str | None) -> None:
+        """A broken body must never crash the transport that received it."""
+        assert reasons_in(body) == set()
+
+    def test_a_string_body_works_as_well_as_bytes(self) -> None:
+        body = json.dumps({"error": {"errors": [{"reason": "dailyLimitExceeded"}]}})
+        assert reasons_in(body) == {"dailylimitexceeded"}

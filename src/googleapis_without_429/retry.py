@@ -18,7 +18,7 @@ from googleapis_without_429.backoff import (
     equal_jitter_delay,
     parse_retry_after,
 )
-from googleapis_without_429.errors import is_rate_limited
+from googleapis_without_429.errors import is_rate_limit, is_rate_limited
 
 __all__ = ["DEFAULT_RETRY", "RetryPolicy"]
 
@@ -83,38 +83,64 @@ class RetryPolicy:
                 f"retry_after_cap must not be negative, got {self.retry_after_cap!r}"
             )
 
-    def should_retry(self, request: PreparedRequest, response: Response) -> bool:
-        """Whether this response is worth trying again.
+    def should_retry_status(
+        self, http_method: str, status: int, reasons: set[str]
+    ) -> bool:
+        """Whether a status is worth trying again, given the method and reasons.
 
-        Rate limits always are: they clear on their own. Server errors are
-        only when the request can be repeated safely, since a 5xx leaves it
-        unknown whether the call already took effect.
+        Transport-independent, so the `requests` session and the httplib2
+        adapter make the same decision from the same evidence.
+
+        Rate limits always qualify: they clear on their own, and the request
+        was rejected rather than half-applied. Server errors qualify only when
+        the request can be repeated safely, since a 5xx leaves it unknown
+        whether the call already took effect.
         """
-        if is_rate_limited(response):
+        if is_rate_limit(status, reasons):
             return True
         if not self.retry_server_errors:
             return False
-        if response.status_code not in self.server_error_statuses:
+        if status not in self.server_error_statuses:
             return False
         if self.retry_unsafe_server_errors:
             return True
-        method = (request.method or "GET").upper()
-        return method in self.idempotent_methods
+        return http_method.upper() in self.idempotent_methods
 
-    def delay_for(
-        self, attempt: int, response: Response, rng: RandomSource | None = None
+    def should_retry(self, request: PreparedRequest, response: Response) -> bool:
+        """Whether a `requests` response is worth trying again."""
+        if is_rate_limited(response):
+            return True
+        return self.should_retry_status(
+            request.method or "GET", response.status_code, set()
+        )
+
+    def delay_after(
+        self,
+        attempt: int,
+        retry_after: str | None = None,
+        rng: RandomSource | None = None,
     ) -> float:
         """Seconds to wait before retry number ``attempt`` (zero-based).
+
+        Takes the raw ``Retry-After`` header rather than a response, so every
+        transport can reach it: `requests` keeps headers on an object, httplib2
+        keeps them in a dict.
 
         The server's own instruction wins when it sends one, bounded so a
         misconfigured proxy cannot stall the process indefinitely.
         """
-        hinted = parse_retry_after(response.headers.get("Retry-After"))
+        hinted = parse_retry_after(retry_after)
         if hinted is not None:
             return min(hinted, self.retry_after_cap)
         return equal_jitter_delay(
             attempt, self.backoff_base, self.backoff_cap, rng or random
         )
+
+    def delay_for(
+        self, attempt: int, response: Response, rng: RandomSource | None = None
+    ) -> float:
+        """Seconds to wait before retrying a `requests` response."""
+        return self.delay_after(attempt, response.headers.get("Retry-After"), rng)
 
 
 #: The policy used when none is given.

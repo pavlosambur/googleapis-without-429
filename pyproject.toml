@@ -46,6 +46,8 @@ Changelog = "https://github.com/pavlosambur/googleapis-without-429/blob/main/CHA
 
 [dependency-groups]
 dev = [
+    "google-api-python-client>=2.200.0",
+    "google-auth-httplib2>=0.4.2",
     "gspread>=6.2.1",
     "mypy>=2.3.1",
     "pre-commit>=4.6.2",
@@ -162,8 +164,10 @@ strict = true
 warn_unreachable = true
 files = ["src", "tests", "scripts"]
 
+# Third-party clients this library adapts to, none of which ship type
+# information. Only the test suite imports them.
 [[tool.mypy.overrides]]
-module = ["gspread.*"]
+module = ["gspread.*", "httplib2.*", "googleapiclient.*", "google_auth_httplib2.*"]
 ignore_missing_imports = true
 
 # Test bodies stay strictly checked, but they are allowed to call the parts of

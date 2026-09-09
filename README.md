@@ -63,9 +63,8 @@ which needs both, since Sheets moves the cell data while Drive owns the file:
 | `open("title")`, `openall`, `list_spreadsheet_files` | Drive, then Sheets |
 | `create`, `copy`, `del_spreadsheet`, `share` | Drive |
 
-Nothing else is covered yet: Gmail, Calendar and Docs have no profile, and
-`google-api-python-client` uses a different transport. Both are on the roadmap.
-A request to any host without a profile passes through untouched — including
+Nothing else is covered yet: Gmail, Calendar and Docs have no profile. A
+request to any host without a profile passes through untouched — including
 the token refresh your credentials perform, which must not eat the quota of the
 API you are actually calling.
 
@@ -234,6 +233,40 @@ not make itself:
 
 ```python
 session.limiter.bucket(SHEETS, "read").acquire()
+```
+
+## google-api-python-client
+
+The official client does not take a `requests` session — it takes an
+httplib2-style transport — so it gets an adapter of its own:
+
+```python
+import google_auth_httplib2
+import httplib2
+from googleapiclient.discovery import build
+
+from googleapis_without_429 import RateLimitedHttp
+
+authorised = google_auth_httplib2.AuthorizedHttp(credentials, http=httplib2.Http())
+service = build("sheets", "v4", http=RateLimitedHttp(authorised))
+
+service.spreadsheets().values().append(
+    spreadsheetId=sheet_id, range="A1", body={"values": rows}
+).execute()
+```
+
+Same profiles, same quotas, same retry rules. `httplib2` is not a dependency of
+this library: the adapter wraps whatever transport you hand it.
+
+If a program uses both clients, give them one limiter so they share a quota
+instead of each keeping its own:
+
+```python
+from googleapis_without_429 import QuotaLimiter, RateLimitedHttp, RateLimitedSession
+
+limiter = QuotaLimiter()
+session = RateLimitedSession(credentials, limiter=limiter)
+http = RateLimitedHttp(authorised_http, limiter=limiter)
 ```
 
 ## Failing instead of waiting
@@ -409,8 +442,6 @@ pipeline. The test suite needs no credentials and makes no network calls.
 
 ## Roadmap
 
-- An adapter for `google-api-python-client`, which uses an httplib2-style
-  transport rather than a `requests` session
 - A Gmail profile — its quota units range from 2 to 100 per call, which is what
   the weighted core was built for
 - Async support

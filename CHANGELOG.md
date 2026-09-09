@@ -34,6 +34,11 @@ Nothing yet.
   `RetryPolicy(retry_unsafe_server_errors=True)` opts POST in;
   `RetryPolicy(retry_server_errors=False)` opts everything out.
 
+- `RateLimitedHttp`, an adapter for `google-api-python-client`. That client
+  takes an httplib2-style transport rather than a `requests` session, so it
+  needed one of its own; it uses the same profiles, quotas and retry rules, and
+  can share a limiter with a session so both stay inside one quota. `httplib2`
+  is not a dependency: the adapter wraps whatever transport it is given.
 - Callers are served in arrival order. Costs differ by a factor of forty on
   Drive, and without a queue cheap calls keep the window just full enough that
   an expensive one never fits. The queue trades a little throughput for the

@@ -4,6 +4,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 from googleapis_without_429.core import WeightedSlidingWindow
 from googleapis_without_429.errors import QuotaTimeoutError, is_rate_limited
+from googleapis_without_429.httplib2_transport import RateLimitedHttp
 from googleapis_without_429.limiter import QuotaLimiter
 from googleapis_without_429.profiles import DRIVE, SHEETS, ApiProfile
 from googleapis_without_429.retry import DEFAULT_RETRY, RetryPolicy
@@ -21,6 +22,7 @@ __all__ = [
     "ApiProfile",
     "QuotaLimiter",
     "QuotaTimeoutError",
+    "RateLimitedHttp",
     "RateLimitedSession",
     "RetryPolicy",
     "WeightedSlidingWindow",

@@ -13,6 +13,7 @@ from one that will not clear until tomorrow.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from requests import RequestException, Response
@@ -20,7 +21,9 @@ from requests import RequestException, Response
 __all__ = [
     "RETRYABLE_REASONS",
     "QuotaTimeoutError",
+    "is_rate_limit",
     "is_rate_limited",
+    "reasons_in",
     "response_reasons",
 ]
 
@@ -65,18 +68,26 @@ FORBIDDEN = 403
 RETRYABLE_REASONS = frozenset({"ratelimitexceeded", "userratelimitexceeded"})
 
 
-def response_reasons(response: Response) -> set[str]:
+def reasons_in(body: bytes | str | None) -> set[str]:
     """Lower-cased ``reason`` strings from a Google API error body.
+
+    Takes the raw body so it serves every transport: a `requests` response, an
+    httplib2 tuple, anything else that ends up carrying one of these.
 
     Returns an empty set for a body that is missing, not JSON, or not shaped
     like a Google error. Nothing here raises: a malformed body must not turn a
     rejected request into a crash inside the transport.
     """
-    try:
-        payload: Any = response.json()
-    except (ValueError, RequestException):
+    if not body:
         return set()
+    try:
+        payload: Any = json.loads(body)
+    except (ValueError, TypeError):
+        return set()
+    return _reasons_from_payload(payload)
 
+
+def _reasons_from_payload(payload: object) -> set[str]:
     if not isinstance(payload, dict):
         return set()
     error = payload.get("error")
@@ -92,15 +103,31 @@ def response_reasons(response: Response) -> set[str]:
     return reasons
 
 
-def is_rate_limited(response: Response) -> bool:
-    """Whether this response means the quota was exceeded and retrying may help.
+def response_reasons(response: Response) -> set[str]:
+    """Lower-cased ``reason`` strings from a `requests` response body."""
+    try:
+        payload: Any = response.json()
+    except (ValueError, RequestException):
+        return set()
+    return _reasons_from_payload(payload)
+
+
+def is_rate_limit(status: int, reasons: set[str]) -> bool:
+    """Whether a status and its error reasons mean "you are going too fast".
 
     A 429 is taken at face value. A 403 counts only when the body names a
     short-term rate limit -- otherwise it is a permission error, and retrying
     one of those turns a clear failure into a slow one.
     """
+    if status == TOO_MANY_REQUESTS:
+        return True
+    if status != FORBIDDEN:
+        return False
+    return bool(reasons & RETRYABLE_REASONS)
+
+
+def is_rate_limited(response: Response) -> bool:
+    """Whether a `requests` response means the quota was exceeded."""
     if response.status_code == TOO_MANY_REQUESTS:
         return True
-    if response.status_code != FORBIDDEN:
-        return False
-    return bool(response_reasons(response) & RETRYABLE_REASONS)
+    return is_rate_limit(response.status_code, response_reasons(response))

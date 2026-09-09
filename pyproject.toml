@@ -50,6 +50,7 @@ dev = [
     "google-auth-httplib2>=0.4.2",
     "gspread>=6.2.1",
     "mypy>=2.3.1",
+    "pillow>=12.3.0",
     "pre-commit>=4.6.2",
     "pytest>=8",
     "pytest-cov>=5",

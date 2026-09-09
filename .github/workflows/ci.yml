@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Callable from the release workflow, so a tag runs the very same checks
+  # rather than a second copy of them that can drift.
+  workflow_call:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

@@ -28,9 +28,6 @@ loop. The session knows what Google's quotas are and paces itself.
 pip install googleapis-without-429
 ```
 
-> **Not on PyPI yet.** Until v0.1.0 is released, install from the repository:
-> `pip install git+https://github.com/pavlosambur/googleapis-without-429`
-
 Requires Python 3.10 or newer.
 
 ## The problem

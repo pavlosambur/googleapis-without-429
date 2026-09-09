@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.0] - 2026-09-09
+
 ### Added
 
 - `WeightedSlidingWindow`: thread-safe core limiter that counts cost rather
@@ -33,4 +37,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   underlying window for anything this library does not model. A session's own
   buckets are reachable through `session.limiter`.
 
-[Unreleased]: https://github.com/pavlosambur/googleapis-without-429/commits/main/
+[Unreleased]: https://github.com/pavlosambur/googleapis-without-429/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/pavlosambur/googleapis-without-429/releases/tag/v0.1.0

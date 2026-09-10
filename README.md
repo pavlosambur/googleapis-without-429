@@ -27,8 +27,8 @@ for row in rows:
     sheet.append_row(row)  # waits when the quota is spent, then continues
 ```
 
-No decorators to add, no calls to rewrite, no `sleep()` sprinkled through the
-loop. The session knows what Google's quotas are and paces itself.
+The session carries a quota profile for each Google API it knows, and blocks a
+call that would exceed one.
 
 ## Install
 
@@ -38,49 +38,56 @@ pip install googleapis-without-429
 
 Requires Python 3.10 or newer.
 
+## Contents
+
+- [The problem](https://github.com/pavlosambur/googleapis-without-429#the-problem)
+- [Supported APIs and quotas](https://github.com/pavlosambur/googleapis-without-429#supported-apis-and-quotas)
+  - [Gmail is priced per method](https://github.com/pavlosambur/googleapis-without-429#gmail-is-priced-per-method)
+- [Clients](https://github.com/pavlosambur/googleapis-without-429#clients)
+  - [gspread](https://github.com/pavlosambur/googleapis-without-429#gspread)
+  - [google-api-python-client](https://github.com/pavlosambur/googleapis-without-429#google-api-python-client)
+  - [aiogoogle (async)](https://github.com/pavlosambur/googleapis-without-429#aiogoogle-async)
+  - [Any other client](https://github.com/pavlosambur/googleapis-without-429#any-other-client)
+  - [Sharing one limiter](https://github.com/pavlosambur/googleapis-without-429#sharing-one-limiter)
+- [Retries](https://github.com/pavlosambur/googleapis-without-429#retries)
+  - [Drive answers 403, not 429](https://github.com/pavlosambur/googleapis-without-429#drive-answers-403-not-429)
+  - [Server errors and writes that must not repeat](https://github.com/pavlosambur/googleapis-without-429#server-errors-and-writes-that-must-not-repeat)
+- [Waiting, timeouts and skipping](https://github.com/pavlosambur/googleapis-without-429#waiting-timeouts-and-skipping)
+- [Stats and logging](https://github.com/pavlosambur/googleapis-without-429#stats-and-logging)
+- [Fairness](https://github.com/pavlosambur/googleapis-without-429#fairness)
+- [Threads](https://github.com/pavlosambur/googleapis-without-429#threads)
+- [Adjusting the limits](https://github.com/pavlosambur/googleapis-without-429#adjusting-the-limits)
+  - [When the metering model differs](https://github.com/pavlosambur/googleapis-without-429#when-the-metering-model-differs)
+- [Adding an API](https://github.com/pavlosambur/googleapis-without-429#adding-an-api)
+- [Development](https://github.com/pavlosambur/googleapis-without-429#development)
+- [Roadmap](https://github.com/pavlosambur/googleapis-without-429#roadmap)
+
 ## The problem
 
 Google's per-minute quotas are small. Sheets allows **60 reads and 60 writes
-per minute per user** — a loop that appends rows hits that in a minute of
-ordinary work, and the script dies partway through with half the data written.
+per minute per user**, so a loop appending 60 rows reaches the write limit and
+the remaining calls fail with `429`.
 
-The official advice is exponential backoff, and every retry library implements
-it. But backoff is a reaction *after* the failure: it recovers, it does not
-prevent. The better first move is not to exceed the quota at all, and to keep
-retries as the second line of defence.
+The documented remedy is exponential backoff, which acts after the failure.
+This library acts before it: each call is counted against a sliding window, and
+a call that would exceed the quota blocks until the window has room.
 
-That is what this does. It tracks what you have spent against a sliding window
-and blocks the call that would go over, instead of letting Google reject it.
+## Supported APIs and quotas
 
-## What is covered
-
-| API | Quota | How it is metered |
+| API | Quota per minute | Metering |
 |---|---|---|
-| Sheets | 60 reads + 60 writes per minute | separate buckets; every call costs 1, batches included |
-| Drive | 325,000 quota units per minute | one shared bucket; a call costs 5 to 200 units |
-| Gmail | 6,000 quota units per minute | one shared bucket; a call costs 1 to 100 units |
+| Sheets | 60 reads + 60 writes | separate buckets; every call costs 1, batches included |
+| Drive | 325,000 quota units | one shared bucket; a call costs 5 to 200 units |
+| Gmail | 6,000 quota units | one shared bucket; a call costs 1 to 100 units |
 
-Sheets and Drive together cover [gspread](https://github.com/burnash/gspread)
-completely, since it needs both — Sheets moves the cell data while Drive owns
-the file:
-
-| gspread call | Goes to |
-|---|---|
-| `open_by_key`, `open_by_url` | Sheets |
-| `worksheet.get`, `get_all_values`, `batch_get` | Sheets |
-| `append_row`, `update`, `clear`, `batch_update` | Sheets |
-| `open("title")`, `openall`, `list_spreadsheet_files` | Drive, then Sheets |
-| `create`, `copy`, `del_spreadsheet`, `share` | Drive |
-
-Calendar and Docs have no profile yet. A request to any host without a profile
-passes through untouched — including the token refresh your credentials
-perform, which must not eat the quota of the API you are actually calling.
+Calendar and Docs have no profile yet. A request to a host that no profile
+claims passes through unmetered, including credential token refresh, which is
+therefore never charged against a bucket.
 
 ### Gmail is priced per method
 
-Gmail is the reason this library counts weight rather than calls. Its methods
-differ by a factor of a hundred, and nothing in the path tells you which is
-which:
+Gmail meters per method rather than per call, and the cost is not derivable
+from the URL:
 
 | Call | Units |
 |---|---|
@@ -90,155 +97,45 @@ which:
 | `threads.get` | **40** |
 | `messages.send` | **100** |
 
-So the Gmail profile carries an explicit table of all 63 methods Google
-publishes a price for, assembled from the usage-limits page (which gives costs
-per method name) and the discovery document (which gives the path for each
-name). Sixteen further methods — the `settings.cse` and S/MIME families — have
-no published price at all; those are charged 100, the most any documented method
-costs, so an unknown call can only be over-counted. Under-counting would mean
-sailing past the quota into the 429 this library exists to prevent.
+The Gmail profile therefore carries an explicit table of the 63 methods Google
+publishes a price for, assembled from the usage-limits page (costs per method
+name) and the discovery document (path per method name). The remaining 16
+methods — the `settings.cse` and S/MIME families — have no published price and
+are charged 100 units, the highest documented cost, so an unrecognised call is
+over-counted rather than under-counted.
 
-In practice that means sixty `messages.send` calls fill a whole minute's
-per-user quota, and the sixty-first waits. That is Google's arithmetic, not
-ours: 60 × 100 = 6,000.
+Sixty `messages.send` calls (60 × 100 = 6,000) exhaust the per-user minute; the
+sixty-first waits.
 
-## This does not remove the need for retries
+## Clients
 
-It reduces 429s. It does not eliminate them, and any library claiming otherwise
-is overselling.
-
-The reason is that the two sides count differently. This library slides a
-window over the timestamps of *your* calls. Google meters *fixed* windows whose
-boundaries you cannot see. So 60 calls that look perfectly spaced from here can
-land as 30 in the tail of one of Google's minutes and 30 in the head of the
-next — and the second batch is over the limit even though our counter says
-there is room.
-
-Being strict about our own window makes us conservative, never reckless: we may
-allow fewer calls than Google would, never more. But the boundary mismatch is
-real, so a retry on 429 is built in and on by default:
-
-```python
-from googleapis_without_429 import RateLimitedSession, RetryPolicy
-
-RateLimitedSession(
-    credentials,
-    retry=RetryPolicy(
-        max_attempts=5,  # total tries per request, including the first
-        backoff_base=1.0,  # ceiling for the first retry delay, in seconds
-        backoff_cap=60.0,  # the ceiling stops doubling here
-    ),
-)
-```
-
-Delays use equal jitter: half the ceiling is always waited and the rest is
-randomised. The guaranteed half matters — a 429 means the window has not
-reopened yet, so a delay that comes out near zero only buys another 429. A
-`Retry-After` header, if the server sends one, wins over the computed delay.
-
-### Drive answers 403, not 429
-
-Google is not consistent here, and it matters. Sheets returns `429` when you go
-too fast. **Drive returns `403 Forbidden`** for the same condition, and only
-sometimes 429 — so a retry that watches for 429 alone quietly does nothing on
-exactly the calls it was meant to protect.
-
-A 403 is also the ordinary answer for *you may not touch this file*, so the
-status code alone cannot decide. The reason string in the response body can:
-
-| Response | Retried | Why |
+| Your client | What you use | Pass it as |
 |---|---|---|
-| `429` | yes | unambiguous |
-| `403` + `rateLimitExceeded` | yes | clears within the minute |
-| `403` + `userRateLimitExceeded` | yes | clears within the minute |
-| `403` + `dailyLimitExceeded` | **no** | resets at midnight Pacific; retrying achieves nothing |
-| `403` + `sharingRateLimitExceeded` | **no** | measured over far too long a period |
-| `403`, anything else | **no** | a permission error — retrying turns a clear failure into a slow one |
+| gspread | `RateLimitedSession` | `gspread.authorize(creds, session=...)` |
+| google-api-python-client | `RateLimitedHttp` | `build(..., http=...)` |
+| aiogoogle | `rate_limited_session(...)` | `Aiogoogle(session_factory=...)` |
+| anything else | `QuotaLimiter` | context manager, decorator or direct call |
 
-A body that is missing, not JSON, or shaped unexpectedly is treated as *not* a
-rate limit, so a malformed response can never turn into a retry loop.
+### gspread
 
-### Server errors, and the write you do not want twice
+`RateLimitedSession` is a `requests` session, which is what
+[gspread](https://github.com/burnash/gspread) accepts — see the example at the
+top of this page.
 
-Google's guidance also recommends backoff for `500`, `502`, `503` and `504`,
-and those are retried too — but **only for methods that are safe to repeat**.
+gspread reaches two APIs, and both are metered by default:
 
-A 5xx means the server may have applied your change and then failed to answer.
-Repeating a `GET` costs nothing; repeating `values:append` adds the row twice,
-and a duplicated row is a worse outcome than an error you can see. So `GET`,
-`HEAD`, `OPTIONS`, `PUT` and `DELETE` are retried on 5xx, and `POST` is not.
+| gspread call | Goes to |
+|---|---|
+| `open_by_key`, `open_by_url` | Sheets |
+| `worksheet.get`, `get_all_values`, `batch_get` | Sheets |
+| `append_row`, `update`, `clear`, `batch_update` | Sheets |
+| `open("title")`, `openall`, `list_spreadsheet_files` | Drive, then Sheets |
+| `create`, `copy`, `del_spreadsheet`, `share` | Drive |
 
-Rate limits are different: a 429 or a rate-limit 403 means the request was
-*rejected*, not half-applied, so those are retried whatever the method.
+### google-api-python-client
 
-If your POSTs genuinely are safe to repeat, say so:
-
-```python
-from googleapis_without_429 import RetryPolicy
-
-RetryPolicy(retry_unsafe_server_errors=True)
-```
-
-Or switch server-error retries off entirely with
-`RetryPolicy(retry_server_errors=False)`.
-
-## Adjusting the limits
-
-The shipped numbers are Google's documented defaults, and defaults go stale.
-Real quotas depend on the project, on when it was created, and Google revises
-them — Drive's changed on 1 May 2026, and projects already using the API kept
-the previous ones. So overriding is a first-class operation:
-
-```python
-from googleapis_without_429 import DRIVE, SHEETS, RateLimitedSession
-
-session = RateLimitedSession(
-    credentials,
-    [
-        SHEETS.with_limits(read=300, write=300),  # the per-project ceiling
-        DRIVE.with_limits(units=12_000),  # an older project
-    ],
-)
-```
-
-The defaults are the **per-user** quotas, which is what a single script runs
-into. Raise them to the per-project ceiling only if the job really is the only
-thing using that project. A misspelled bucket name raises rather than being
-quietly ignored, so a typo cannot leave you believing a limit was raised.
-
-Check what your project actually has in the Cloud Console under
-**APIs & Services → Quotas**; it can differ from the documentation.
-
-### When the metering model itself differs
-
-`with_limits` changes a number. Sometimes the whole model is different: Drive
-counted **requests** before 1 May 2026 and counts **weighted quota units**
-after, and a project that was already using the API kept the old scheme. There
-is no conversion between the two, so no single number bridges them — such a
-project needs its own profile, with its own `resolve` and its own window:
-
-```python
-from googleapis_without_429 import ApiProfile, RateLimitedSession
-
-DRIVE_LEGACY = ApiProfile(
-    name="drive",
-    host="www.googleapis.com",
-    path_prefixes=("/drive/", "/upload/drive/"),
-    limits={"queries": 12_000},  # your project's real figure, from the Console
-    resolve=lambda method, path, query: ("queries", 1),  # requests, not units
-    window=100.0,  # some legacy quotas are metered per 100 seconds
-)
-
-session = RateLimitedSession(credentials, [DRIVE_LEGACY])
-```
-
-The window belongs to the profile, not to the session, so a limiter can hold a
-per-minute quota and a per-100-seconds one at the same time.
-
-## google-api-python-client
-
-The official client does not take a `requests` session — it takes an
-httplib2-style transport — so it gets an adapter of its own:
+The official client takes an httplib2-style transport rather than a `requests`
+session, so it uses a separate adapter:
 
 ```python
 import google_auth_httplib2
@@ -255,24 +152,13 @@ service.spreadsheets().values().append(
 ).execute()
 ```
 
-Same profiles, same quotas, same retry rules. `httplib2` is not a dependency of
-this library: the adapter wraps whatever transport you hand it.
+`httplib2` is not a dependency of this library; the adapter wraps whichever
+transport it is given.
 
-A program that uses more than one client should give them a single limiter, so
-they share one quota instead of each keeping its own:
+### aiogoogle (async)
 
-```python
-from googleapis_without_429 import QuotaLimiter, RateLimitedHttp, RateLimitedSession
-
-limiter = QuotaLimiter()
-session = RateLimitedSession(credentials, limiter=limiter)
-http = RateLimitedHttp(authorised_http, limiter=limiter)
-```
-
-## Async
-
-`aiogoogle` takes a session *class*, not an instance, so this ships a factory
-that wraps one:
+`aiogoogle` takes a session class rather than an instance, so the adapter is a
+factory that subclasses one:
 
 ```python
 from aiogoogle.client import Aiogoogle
@@ -294,40 +180,22 @@ async def append_rows(creds, sheet_id, rows):
             )
 ```
 
-Same profiles, same quotas, same retry rules. `aiogoogle` is not a dependency —
-the factory subclasses whatever session class you hand it.
+The quota belongs to the returned class rather than to its instances, because
+`aiogoogle` constructs a session per operation; a per-instance limiter would
+give each call a full quota. `aiogoogle` is not a dependency.
 
-The quota lives in the returned class rather than in its instances, which
-matters here: `aiogoogle` builds a fresh session for every operation, so a
-per-instance limiter would hand each call its own full quota.
+Retries in this adapter apply to single requests only. `aiogoogle` sends a
+batch concurrently and raises one error for the whole set, which does not
+identify the failing call.
 
-Underneath, `acquire_async` shares its decision with `acquire`; only the waiting
-differs. Working out whether there is room takes microseconds under a plain
-lock, and an `asyncio.Lock` would be worse there, since it does not exclude
-other threads. So one limiter can be shared between threads and coroutines and
-they draw on a single quota:
+`gspread-asyncio` is not supported: it runs synchronous gspread in a thread
+pool and constructs its client without a session argument.
 
-```python
-from googleapis_without_429 import (
-    QuotaLimiter,
-    RateLimitedSession,
-    rate_limited_session,
-)
+### Any other client
 
-limiter = QuotaLimiter()
-session = RateLimitedSession(credentials, limiter=limiter)
-Session = rate_limited_session(AiohttpSession, limiter=limiter)
-```
-
-> **Not covered:** `gspread-asyncio` runs synchronous gspread in a thread pool
-> and builds its client without a session argument, so this cannot be dropped
-> into it.
-
-## Without a session
-
-If the calls are not made through a `requests` session — a hand-rolled client,
-a worker, an API this library has no adapter for — use the limiter directly. It
-is both a context manager and a decorator:
+For calls made some other way — a hand-rolled client, a worker, an API with no
+adapter here — use the limiter directly. It is both a context manager and a
+decorator:
 
 ```python
 from googleapis_without_429 import SHEETS, QuotaLimiter
@@ -343,29 +211,119 @@ with limiter.limit(SHEETS, "read"):
     ...
 ```
 
-Every one of those has an awaitable twin for asynchronous callers —
-`acquire_async`, `acquire_for_async` and `limit_async`, used the same way.
+`acquire_async`, `acquire_for_async` and `limit_async` are the awaitable
+equivalents, used the same way.
 
-And the raw window underneath, when nothing above fits:
+The underlying window is reachable directly:
 
 ```python
 limiter.bucket(SHEETS, "write").acquire(cost=1)
-limiter.bucket(SHEETS, "write").used  # what is currently counted
+limiter.bucket(SHEETS, "write").used  # units currently counted
 ```
 
-A session exposes its own limiter the same way, so you can pace a call it does
-not make itself:
+### Sharing one limiter
+
+A program using more than one client should pass a single limiter to all of
+them, so they draw on one quota rather than one each:
+
+```python
+from googleapis_without_429 import QuotaLimiter, RateLimitedHttp, RateLimitedSession
+
+limiter = QuotaLimiter()
+session = RateLimitedSession(credentials, limiter=limiter)
+http = RateLimitedHttp(authorised_http, limiter=limiter)
+```
+
+`acquire` and `acquire_async` share one lock and one set of buckets, so a
+single limiter can be shared between threads and coroutines. A session also
+exposes its own limiter, for pacing a call it does not make itself:
 
 ```python
 session.limiter.bucket(SHEETS, "read").acquire()
 ```
 
-## Failing instead of waiting
+## Retries
 
-By default the limiter waits as long as the quota needs, which is right for a
-batch job and wrong for anything serving a request. A web handler that stalls
-for fifty seconds is indistinguishable from a hung process, and the caller
-would almost always rather have an error:
+Pacing reduces `429` responses but does not eliminate them, so a retry is built
+in and enabled by default.
+
+The two sides count differently. This library slides a window over the
+timestamps of its own calls; Google meters fixed windows whose boundaries are
+not visible from the client. Sixty evenly spaced calls can land as 30 in the
+tail of one Google minute and 30 in the head of the next, and the second group
+exceeds the limit while the local counter still shows room. The limiter may
+therefore allow fewer calls than Google would, never more.
+
+```python
+from googleapis_without_429 import RateLimitedSession, RetryPolicy
+
+RateLimitedSession(credentials, retry=RetryPolicy(max_attempts=3))
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `max_attempts` | `5` | total tries per request, including the first |
+| `backoff_base` | `1.0` | ceiling for the first retry delay, in seconds |
+| `backoff_cap` | `60.0` | the ceiling stops doubling here |
+| `retry_after_cap` | `300.0` | longest `Retry-After` that will be honoured |
+| `retry_server_errors` | `True` | retry 500, 502, 503 and 504 |
+| `retry_unsafe_server_errors` | `False` | also retry `POST` on those |
+
+Delays use equal jitter: half the ceiling is always waited, the rest is
+randomised. The lower half is not randomised away because a `429` means the
+window has not reopened, so a near-zero delay produces another `429`. A
+`Retry-After` header, when present, takes precedence over the computed delay,
+bounded by `retry_after_cap`.
+
+### Drive answers 403, not 429
+
+Sheets returns `429` when a quota is exceeded. Drive returns `403 Forbidden`
+for the same condition and only sometimes `429`, so a retry policy keyed on
+`429` alone misses Drive rate limiting entirely.
+
+A `403` is also the ordinary response to a permission failure, so the status
+code alone is not sufficient. The reason string in the response body is:
+
+| Response | Retried | Reason |
+|---|---|---|
+| `429` | yes | unambiguous |
+| `403` + `rateLimitExceeded` | yes | clears within the minute |
+| `403` + `userRateLimitExceeded` | yes | clears within the minute |
+| `403` + `dailyLimitExceeded` | **no** | resets at midnight Pacific |
+| `403` + `sharingRateLimitExceeded` | **no** | not a short-term limit |
+| `403`, any other reason | **no** | not a rate limit |
+
+A body that is absent, not JSON, or shaped unexpectedly counts as not a rate
+limit, so a malformed response cannot start a retry loop.
+
+### Server errors and writes that must not repeat
+
+Google's guidance recommends backoff for `500`, `502`, `503` and `504`. A 5xx
+leaves it unknown whether the request took effect, so only methods that are
+safe to repeat are retried:
+
+| Method | Retried on 5xx | Reason |
+|---|---|---|
+| `GET`, `HEAD`, `OPTIONS` | yes | no side effect |
+| `PUT`, `DELETE` | yes | idempotent |
+| `POST` | **no** | repeating `values:append` adds the row twice |
+
+Rate limits are unaffected by this rule: a `429` or a rate-limit `403` rejected
+the request outright, so those are retried for any method.
+
+To retry `POST` on 5xx as well, or to disable server-error retries:
+
+```python
+from googleapis_without_429 import RetryPolicy
+
+RetryPolicy(retry_unsafe_server_errors=True)
+RetryPolicy(retry_server_errors=False)
+```
+
+## Waiting, timeouts and skipping
+
+By default a call waits as long as the quota requires. For request-serving
+code, `acquire_timeout` bounds that wait:
 
 ```python
 from googleapis_without_429 import QuotaTimeoutError, RateLimitedSession
@@ -378,11 +336,11 @@ except QuotaTimeoutError as exc:
     print(f"gave up after {exc.waited:.1f}s waiting for {exc.cost} unit(s)")
 ```
 
-`QuotaTimeoutError` subclasses the built-in `TimeoutError`, so code that
-already handles timeouts catches it without knowing this library exists. No
-quota is consumed when it raises.
+`QuotaTimeoutError` subclasses the built-in `TimeoutError`, so existing
+`except TimeoutError` handlers catch it. No quota is consumed when it raises.
 
-For work that can simply be skipped, ask instead of waiting:
+For work that can be skipped instead of delayed, `try_acquire` takes quota only
+if it is free:
 
 ```python
 from googleapis_without_429 import SHEETS, QuotaLimiter
@@ -396,10 +354,9 @@ def refresh(spreadsheet_id):
     return serve_cached(spreadsheet_id)
 ```
 
-## Seeing what it is doing
+## Stats and logging
 
-A rate limiter that is working correctly looks exactly like a program that has
-hung. Every bucket therefore counts what it has done, with no configuration:
+Every bucket records counters, with no configuration:
 
 ```python
 for name, stats in session.limiter.stats().items():
@@ -415,9 +372,8 @@ sheets:write: 60 granted, 0 waited 0.0s total, 0 timed out
 drive:units: 4 granted, 0 waited 0.0s total, 0 timed out
 ```
 
-Read that as a diagnosis: reads are the bottleneck and writes are nowhere near
-their limit, so raising the read limit — if the project's real quota allows —
-is what would speed this job up.
+In this output the read bucket is the bottleneck: three waits totalling 58
+seconds, against none on writes.
 
 Waiting is logged at `DEBUG` and retries at `INFO`, under the
 `googleapis_without_429` logger:
@@ -435,29 +391,24 @@ INFO  googleapis_without_429.session: GET /v4/spreadsheets/abc: rate limited (42
 
 ## Fairness
 
-Callers are served in the order they arrived. That matters as soon as calls
-cost different amounts: Drive charges 200 units for a download and 5 for a
-metadata read, so without an order the cheap calls keep the window just full
-enough that the expensive one never fits — and it waits forever while
-everything around it proceeds.
+Callers are served in arrival order. Without an order, an expensive call can be
+starved indefinitely: Drive charges 200 units for a download and 5 for a
+metadata read, so cheap calls can keep the window full enough that the
+expensive one never fits.
 
-The queue costs a little throughput, since a cheap call that would fit right
-now waits behind an expensive one that does not. That is the trade being made
-deliberately: a call that never runs is a worse outcome than one that runs
-slightly later. For Sheets it changes nothing at all, because every call there
-costs exactly one.
+The queue costs throughput in one case — a cheap call that would fit now waits
+behind an expensive one that does not. For Sheets nothing changes, because
+every call there costs 1.
 
 ## Threads
 
-The limiter is thread-safe. `WeightedSlidingWindow` and `QuotaLimiter` are
-built for concurrent use and the test suite exercises them on the free-threaded
-build (3.14t) in CI, where threads really do run at the same instant.
+`WeightedSlidingWindow` and `QuotaLimiter` are thread-safe, and the test suite
+exercises them on the free-threaded build (3.14t) in CI.
 
-The session is a different matter: it inherits from `requests.Session`, whose
-documentation makes no thread-safety promise either way. The reliable shape is
-therefore **one session per thread, sharing a single limiter** — otherwise each
-session keeps its own quota and the effective limit is multiplied by the number
-of threads, which is how you hit 429 while believing you are being careful:
+`RateLimitedSession` inherits from `requests.Session`, which makes no
+thread-safety promise. Use one session per thread with a shared limiter;
+otherwise each session keeps its own quota and the effective limit is
+multiplied by the number of threads:
 
 ```python
 from concurrent.futures import ThreadPoolExecutor
@@ -478,13 +429,63 @@ with ThreadPoolExecutor(max_workers=8) as pool:
     results = list(pool.map(fetch, spreadsheet_ids))
 ```
 
-Every worker waits on the same quota, so eight threads consume the same 60
-reads a minute that one thread would.
+Eight threads then consume the same 60 reads a minute that one thread would.
+
+## Adjusting the limits
+
+The shipped figures are Google's documented defaults. Real quotas depend on the
+project and on when it was created — Drive's changed on 1 May 2026, and
+projects already using the API kept the previous ones. Limits are overridable
+per profile:
+
+```python
+from googleapis_without_429 import DRIVE, SHEETS, RateLimitedSession
+
+session = RateLimitedSession(
+    credentials,
+    [
+        SHEETS.with_limits(read=300, write=300),  # the per-project ceiling
+        DRIVE.with_limits(units=12_000),  # an older project
+    ],
+)
+```
+
+The defaults are the **per-user** quotas, which is what a single script reaches.
+The per-project ceiling applies only if the job is the sole user of that
+project. An unknown bucket name raises `ValueError` rather than being ignored.
+
+Project quotas are listed in the Cloud Console under
+**APIs & Services → Quotas**, and can differ from the documentation.
+
+### When the metering model differs
+
+`with_limits` changes limit values only. Drive counted requests before
+1 May 2026 and counts weighted units after; the two schemes are not
+convertible, so a project on the older one needs its own profile with its own
+`resolve` and `window`:
+
+```python
+from googleapis_without_429 import ApiProfile, RateLimitedSession
+
+DRIVE_LEGACY = ApiProfile(
+    name="drive",
+    host="www.googleapis.com",
+    path_prefixes=("/drive/", "/upload/drive/"),
+    limits={"queries": 12_000},  # the project's real figure, from the Console
+    resolve=lambda method, path, query: ("queries", 1),  # requests, not units
+    window=100.0,  # some legacy quotas are metered per 100 seconds
+)
+
+session = RateLimitedSession(credentials, [DRIVE_LEGACY])
+```
+
+The window belongs to the profile, so one limiter can hold a per-minute quota
+and a per-100-seconds quota at the same time.
 
 ## Adding an API
 
-A profile is data, not code: a host, a map of buckets to limits, and a function
-that says which bucket a call belongs to and what it costs.
+A profile is data: a host, a map of buckets to limits, and a function returning
+the bucket and cost for a call.
 
 ```python
 from googleapis_without_429 import ApiProfile, QuotaLimiter
@@ -504,20 +505,20 @@ DOCS = ApiProfile(
 limiter = QuotaLimiter([DOCS])
 ```
 
-Two things worth knowing before writing one:
+Two constraints on `resolve`:
 
-- **The HTTP method is not the whole story.** Sheets sends several reads as
-  POST (`:getByDataFilter`, `:batchGetByDataFilter`, `developerMetadata:search`)
-  because they carry a request body. Charging those to the write bucket burns
-  one of only 60 writes a minute. The published
+- **The HTTP method does not always identify the operation.** Sheets sends
+  several reads as POST (`:getByDataFilter`, `:batchGetByDataFilter`,
+  `developerMetadata:search`) because they carry a request body. Charging those
+  to the write bucket consumes one of 60 writes a minute. An API's published
   [discovery document](https://developers.google.com/discovery/v1/reference)
-  for an API lists every method with its real HTTP verb and path.
-- **A host may serve several APIs.** Drive lives on `www.googleapis.com`
-  alongside others, so its profile claims `path_prefixes=("/drive/",
-  "/upload/drive/")`. Leave that empty only when the host belongs to one API.
+  lists every method with its real verb and path.
+- **A host may serve several APIs.** Drive shares `www.googleapis.com` with
+  others, so its profile sets `path_prefixes=("/drive/", "/upload/drive/")`.
+  Leave that empty only when the host belongs to a single API.
 
-Profiles for other Google APIs are very welcome as pull requests — that is the
-cheapest way for this library to grow, and it needs no changes to the core.
+Profiles for other Google APIs are welcome as pull requests; adding one
+requires no changes to the core.
 
 ## Development
 
@@ -528,26 +529,21 @@ uv run pre-commit install    # optional: fast checks on every commit
 ```
 
 Individual steps: `make lint`, `make check-format`, `make typecheck`,
-`make test`. CI calls the same targets, so a green local run means a green
-pipeline. The test suite needs no credentials and makes no network calls.
+`make test`. CI calls the same targets. The test suite needs no credentials and
+makes no network calls.
 
 ## Roadmap
 
-Both of the original roadmap items — a Gmail profile and async support — are
-done. What is left is written down honestly rather than promised:
-
-- **Calendar and Docs profiles.** A profile is data, so these are small; the
-  work is verifying each API's quotas against its own documentation rather than
-  guessing from a neighbour.
+- **Calendar and Docs profiles.** Blocked on verifying each API's published
+  quotas.
 - **A Drive profile for projects on the pre-May-2026 quota**
   ([#1](https://github.com/pavlosambur/googleapis-without-429/issues/1)). That
-  scheme counted requests rather than weighted units, so it needs its own
-  profile — the machinery exists and is documented above. What is missing is a
-  figure nobody can verify without a project still on the old quota, and a
-  default that looks authoritative while being wrong is worse than none.
-- **Batch retries for the async adapter.** `aiogoogle` sends a batch
-  concurrently and raises a single error for the whole set, so today only single
-  requests are retried.
+  scheme counted requests rather than weighted units. No default is shipped
+  because the figure cannot be verified without a project still on the old
+  quota; the machinery is documented under
+  [When the metering model differs](https://github.com/pavlosambur/googleapis-without-429#when-the-metering-model-differs).
+- **Batch retries for the async adapter.** `aiogoogle` raises one error for a
+  concurrent batch, which does not identify the failing request.
 
 ## License
 

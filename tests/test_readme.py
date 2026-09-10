@@ -154,3 +154,63 @@ class TestNamesTheReaderWillTry:
         assert not missing, (
             f"README imports names the package does not export: {missing}"
         )
+
+
+GITHUB_BASE = "https://github.com/pavlosambur/googleapis-without-429"
+
+# Deliberately absent from the Contents list: Install sits directly above it,
+# and License needs no navigation.
+NOT_IN_CONTENTS = {"install", "license", "contents"}
+
+
+def heading_slug(heading: str) -> str:
+    """GitHub's anchor for a heading: lower-cased, punctuation dropped."""
+    lowered = re.sub(r"[^\w\s-]", "", heading.strip().lower())
+    return re.sub(r"\s+", "-", lowered)
+
+
+def readme_headings() -> dict[str, str]:
+    text = README.read_text(encoding="utf-8")
+    return {
+        heading_slug(match.group(2)): match.group(2)
+        for match in re.finditer(r"^(#{2,3})\s+(.+)$", text, re.MULTILINE)
+    }
+
+
+def readme_anchor_links() -> list[str]:
+    text = README.read_text(encoding="utf-8")
+    return re.findall(rf"\]\({re.escape(GITHUB_BASE)}#([a-z0-9-]+)\)", text)
+
+
+class TestNavigation:
+    """The table of contents is the first thing a reader uses and the first
+    thing to rot: renaming a heading silently breaks a link that still looks
+    fine in the source.
+    """
+
+    def test_the_readme_has_a_contents_list(self) -> None:
+        assert "## Contents" in README.read_text(encoding="utf-8")
+
+    def test_every_anchor_link_resolves_to_a_heading(self) -> None:
+        headings = readme_headings()
+        broken = sorted({a for a in readme_anchor_links() if a not in headings})
+        assert not broken, f"links point at headings that do not exist: {broken}"
+
+    def test_every_section_is_listed_in_the_contents(self) -> None:
+        text = README.read_text(encoding="utf-8")
+        contents = text[text.index("## Contents") : text.index("## The problem")]
+        listed = set(re.findall(rf"{re.escape(GITHUB_BASE)}#([a-z0-9-]+)", contents))
+
+        missing = sorted(
+            slug
+            for slug in readme_headings()
+            if slug not in listed and slug not in NOT_IN_CONTENTS
+        )
+        assert not missing, f"sections missing from Contents: {missing}"
+
+    def test_contents_links_are_absolute(self) -> None:
+        """PyPI strips heading ids, so a bare #anchor is dead on the package page."""
+        text = README.read_text(encoding="utf-8")
+        contents = text[text.index("## Contents") : text.index("## The problem")]
+        relative = re.findall(r"\]\(#([a-z0-9-]+)\)", contents)
+        assert not relative, f"relative anchors would not work on PyPI: {relative}"

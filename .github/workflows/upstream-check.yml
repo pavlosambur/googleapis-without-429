@@ -7,10 +7,22 @@ name: Upstream check
 #
 # It is not part of CI: the test suite is deliberately offline, and a Google
 # outage must not turn pull requests red.
+#
+# Two things about the schedule itself, both documented by GitHub:
+#
+#   - In a public repository, scheduled workflows are disabled automatically
+#     after 60 days with no repository activity. A guard against silent
+#     staleness can therefore go silent itself; workflow_dispatch is the way
+#     to run it by hand, and re-enabling is a click in the Actions tab.
+#   - Notifications for a scheduled workflow go to whoever last edited the
+#     cron line, so that is who hears about a failure.
 on:
   schedule:
     - cron: "0 6 1 * *"
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   discovery-drift:

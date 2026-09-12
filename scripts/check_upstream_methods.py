@@ -7,11 +7,15 @@ repricing a call leaves the table quietly wrong — over-counting at best,
 sailing past a quota at worst.
 
 This runs on a schedule rather than in the test suite, which is deliberately
-offline. It reports:
+offline. It fails -- rather than merely printing -- when any of these change:
 
-- paths in a table that no longer exist upstream (a rename, or a typo)
-- methods upstream that no table prices (these fall back to a default, which
-  is safe but may be far from the real cost)
+- a priced path no longer exists upstream (a rename, or a typo in a table)
+- the number of methods in a discovery document differs from the recorded one
+- for Gmail, the set of methods with no published price differs from the
+  recorded one, in either direction
+
+Everything it checks is pinned to a recorded baseline, because a scheduled run
+that prints a warning and exits zero is a run nobody reads.
 
 It cannot detect a *reprice*: discovery carries no costs. The dates below are
 the honest answer to "when was this last checked against the page".
@@ -40,11 +44,46 @@ PATH_PREFIX = {
     "drive": "",
 }
 
-#: Whether the table is meant to cover the whole API. Gmail's prices every
-#: method Google publishes a figure for, so anything missing is worth listing.
-#: Drive's is a short list of exceptions to a path-shape fallback, so most
-#: methods being absent is the design, not drift.
-EXHAUSTIVE = {"gmail": True, "drive": False}
+#: How many methods each discovery document held when the tables were last
+#: checked against Google's published costs, on 2026-09-12.
+#:
+#: A count catches a method arriving or disappearing. It cannot catch one
+#: being added and another removed between two runs; the stale-path check
+#: covers that for anything actually priced.
+EXPECTED_METHOD_COUNT = {"gmail": 79, "drive": 64}
+
+#: Gmail methods Google publishes no price for. They are charged the profile's
+#: fallback, which is the highest documented cost -- safe, but far from the
+#: real figure for most of them.
+#:
+#: Recorded so that a change fails the run instead of scrolling past in a green
+#: log: a new unpriced method arriving, or one of these finally gaining a
+#: published price, both mean the table needs revisiting.
+#:
+#: Drive has no entry here on purpose. Its table is a short list of exceptions
+#: to a path-shape fallback, so most methods being absent is the design.
+UNPRICED_BASELINE: dict[str, frozenset[tuple[str, str]]] = {
+    "gmail": frozenset(
+        {
+            ("DELETE", "settings/cse/identities/{cseEmailAddress}"),
+            ("DELETE", "settings/sendAs/{sendAsEmail}/smimeInfo/{id}"),
+            ("GET", "settings/cse/identities"),
+            ("GET", "settings/cse/identities/{cseEmailAddress}"),
+            ("GET", "settings/cse/keypairs"),
+            ("GET", "settings/cse/keypairs/{keyPairId}"),
+            ("GET", "settings/sendAs/{sendAsEmail}/smimeInfo"),
+            ("GET", "settings/sendAs/{sendAsEmail}/smimeInfo/{id}"),
+            ("PATCH", "settings/cse/identities/{emailAddress}"),
+            ("POST", "settings/cse/identities"),
+            ("POST", "settings/cse/keypairs"),
+            ("POST", "settings/cse/keypairs/{keyPairId}:disable"),
+            ("POST", "settings/cse/keypairs/{keyPairId}:enable"),
+            ("POST", "settings/cse/keypairs/{keyPairId}:obliterate"),
+            ("POST", "settings/sendAs/{sendAsEmail}/smimeInfo"),
+            ("POST", "settings/sendAs/{sendAsEmail}/smimeInfo/{id}/setDefault"),
+        }
+    ),
+}
 
 TIMEOUT_SECONDS = 30
 
@@ -72,7 +111,10 @@ def methods_in(document: dict[str, Any]) -> dict[tuple[str, str], str]:
 
 
 def compare(api: str, table: dict[tuple[str, str], int]) -> int:
-    """Report drift between one table and its discovery document."""
+    """Report drift between one table and its discovery document.
+
+    Returns the number of differences found, each of which fails the run.
+    """
     document = fetch(DISCOVERY[api])
     upstream = methods_in(document)
     prefix = PATH_PREFIX[api]
@@ -87,27 +129,44 @@ def compare(api: str, table: dict[tuple[str, str], int]) -> int:
         f"{len(upstream)} methods upstream, {len(table)} priced"
     )
 
+    problems = 0
+
     stale = sorted(key for key in table if key not in normalised)
     if stale:
+        problems += 1
         print("  priced paths that no longer exist upstream:")
         for verb, path in stale:
             print(f"    {verb:<7} {path}")
 
-    unpriced = sorted(
-        (verb, path, method_id)
-        for (verb, path), method_id in normalised.items()
-        if (verb, path) not in table
-    )
-    if unpriced and EXHAUSTIVE[api]:
+    expected_count = EXPECTED_METHOD_COUNT[api]
+    if len(upstream) != expected_count:
+        problems += 1
         print(
-            f"  upstream methods with no entry ({len(unpriced)}, charged the fallback):"
+            f"  method count changed: {expected_count} when last checked, "
+            f"{len(upstream)} now"
         )
-        for verb, path, method_id in unpriced:
-            print(f"    {verb:<7} {method_id:<40} {path}")
-    elif unpriced:
-        print(f"  {len(unpriced)} methods use the path-shape fallback, as designed")
 
-    return 1 if stale else 0
+    unpriced = {key for key in normalised if key not in table}
+    baseline = UNPRICED_BASELINE.get(api)
+    if baseline is None:
+        print(f"  {len(unpriced)} methods use the path-shape fallback, as designed")
+        return problems
+
+    for label, difference in (
+        ("upstream methods with no entry, not seen before", unpriced - baseline),
+        ("methods that were unpriced and are no longer", baseline - unpriced),
+    ):
+        if not difference:
+            continue
+        problems += 1
+        print(f"  {label} ({len(difference)}):")
+        for verb, path in sorted(difference):
+            print(f"    {verb:<7} {normalised.get((verb, path), '-'):<40} {path}")
+
+    if not (unpriced - baseline) and not (baseline - unpriced):
+        print(f"  {len(unpriced)} methods unpriced, exactly as recorded")
+
+    return problems
 
 
 def main() -> int:
@@ -122,9 +181,12 @@ def main() -> int:
 
     print()
     if failures:
-        print("Tables have drifted from upstream. Re-check the published costs.")
+        print(
+            f"{failures} difference(s) from the recorded baseline. Re-check the "
+            "published costs, then update the baseline in this file."
+        )
     else:
-        print("No priced path has disappeared upstream.")
+        print("Both tables match the recorded baseline.")
     return 1 if failures else 0
 
 

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.5.0] - 2026-09-12
+
 ### Fixed
 
 - Drive's `files.download` was priced at 50 units instead of 200. It is a
@@ -169,7 +173,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   underlying window for anything this library does not model. A session's own
   buckets are reachable through `session.limiter`.
 
-[Unreleased]: https://github.com/pavlosambur/googleapis-without-429/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/pavlosambur/googleapis-without-429/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/pavlosambur/googleapis-without-429/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/pavlosambur/googleapis-without-429/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/pavlosambur/googleapis-without-429/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/pavlosambur/googleapis-without-429/compare/v0.1.0...v0.2.0

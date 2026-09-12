@@ -13,22 +13,20 @@ from collections.abc import Mapping, Sequence
 __all__ = ["PathTable", "path_segments"]
 
 
-def path_segments(path: str, *, after: str | None = None) -> list[str] | None:
-    """Split a URL path into segments, optionally dropping a leading prefix.
+def path_segments(path: str, *, after: str) -> list[str] | None:
+    """Split a URL path into segments, dropping everything up to a marker.
 
     Args:
         path: The URL path.
         after: A segment to skip past. Everything up to and including it is
             dropped, plus one more segment -- the identifier that follows it in
-            Google's paths, as in ``users/{userId}`` or ``v3/files``.
+            Google's paths, as in ``users/{userId}``.
 
     Returns:
         The remaining segments, or ``None`` if the path does not have the
         expected shape.
     """
     segments = [segment for segment in path.split("/") if segment]
-    if after is None:
-        return segments or None
     try:
         index = segments.index(after)
     except ValueError:
@@ -83,9 +81,6 @@ class PathTable:
                 key=lambda entry: sum(m is not None for m in entry[0]),
                 reverse=True,
             )
-
-    def __len__(self) -> int:
-        return sum(len(candidates) for candidates in self._by_shape.values())
 
     def lookup(self, http_method: str, segments: Sequence[str]) -> int | None:
         """The value for this call, or ``None`` if the table has no entry."""

@@ -8,19 +8,23 @@ from googleapis_without_429.profiles.matching import PathTable, path_segments
 
 
 class TestPathSegments:
-    def test_it_splits_a_plain_path(self) -> None:
-        assert path_segments("/drive/v3/files/id7") == ["drive", "v3", "files", "id7"]
-
-    def test_it_ignores_empty_segments(self) -> None:
-        assert path_segments("//files//id7//") == ["files", "id7"]
-
-    def test_an_empty_path_yields_nothing(self) -> None:
-        assert path_segments("/") is None
-
     def test_it_drops_everything_up_to_and_past_the_marker(self) -> None:
         """Gmail paths carry users/{userId} before the part that identifies
         the method."""
         assert path_segments("/gmail/v1/users/me/labels", after="users") == ["labels"]
+
+    def test_it_keeps_every_segment_below_the_marker(self) -> None:
+        assert path_segments("/users/me/settings/sendAs/a@b.c", after="users") == [
+            "settings",
+            "sendAs",
+            "a@b.c",
+        ]
+
+    def test_it_ignores_empty_segments(self) -> None:
+        assert path_segments("//users//me//labels//", after="users") == ["labels"]
+
+    def test_an_empty_path_yields_nothing(self) -> None:
+        assert path_segments("/", after="users") is None
 
     def test_a_path_without_the_marker_yields_nothing(self) -> None:
         assert path_segments("/gmail/v1/nonsense", after="users") is None
@@ -72,10 +76,6 @@ class TestPathTable:
 
     def test_an_empty_table_matches_nothing(self) -> None:
         assert PathTable({}).lookup("GET", ["files"]) is None
-
-    def test_len_counts_the_entries(self) -> None:
-        table = PathTable({("GET", "a"): 1, ("POST", "a"): 2, ("GET", "a/{b}"): 3})
-        assert len(table) == 3
 
     @pytest.mark.parametrize("segments", [[], ["a"], ["a", "b", "c", "d", "e"]])
     def test_unknown_shapes_return_none_rather_than_raising(

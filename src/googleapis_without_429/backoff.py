@@ -9,7 +9,7 @@ still straddle two of Google's windows and come back 429.
 from __future__ import annotations
 
 import random
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Protocol
 
@@ -86,7 +86,7 @@ def parse_retry_after(
     except (TypeError, ValueError):
         return None
     if when.tzinfo is None:
-        when = when.replace(tzinfo=timezone.utc)
+        when = when.replace(tzinfo=UTC)
 
-    reference = now or datetime.now(timezone.utc)
+    reference = now or datetime.now(UTC)
     return max((when - reference).total_seconds(), 0.0)

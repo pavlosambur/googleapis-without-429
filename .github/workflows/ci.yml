@@ -22,7 +22,7 @@ jobs:
         # 3.14t is the free-threaded build. This library is a lock and a
         # deque shared between threads, so running the suite without the GIL
         # is the check that its concurrency claim is worth anything.
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14", "3.14t"]
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.14t"]
     env:
       UV_PYTHON: ${{ matrix.python-version }}
     steps:

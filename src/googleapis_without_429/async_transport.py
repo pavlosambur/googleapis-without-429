@@ -121,7 +121,7 @@ def rate_limited_session(  # noqa: PLR0913 - tuning knobs, all keyword-only
             while True:
                 try:
                     return await super().send(*requests, **kwargs)
-                except Exception as error:  # noqa: PERF203 - it is a retry loop
+                except Exception as error:
                     status, body = _error_details(error)
                     attempts += 1
                     if status is None:

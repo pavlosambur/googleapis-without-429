@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -61,14 +61,14 @@ class TestParseRetryAfter:
         assert parse_retry_after("-5") == 0.0
 
     def test_http_date_form(self) -> None:
-        now = datetime(2026, 9, 8, 12, 0, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 9, 8, 12, 0, 0, tzinfo=UTC)
         when = now + timedelta(seconds=45)
         header = when.strftime("%a, %d %b %Y %H:%M:%S GMT")
 
         assert parse_retry_after(header, now=now) == pytest.approx(45.0)
 
     def test_a_date_in_the_past_is_clamped_to_zero(self) -> None:
-        now = datetime(2026, 9, 8, 12, 0, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 9, 8, 12, 0, 0, tzinfo=UTC)
         header = (now - timedelta(hours=1)).strftime("%a, %d %b %Y %H:%M:%S GMT")
 
         assert parse_retry_after(header, now=now) == 0.0
@@ -80,7 +80,7 @@ class TestParseRetryAfter:
 
 def test_an_http_date_without_a_timezone_is_read_as_utc() -> None:
     """RFC 9110 dates are always GMT, but a sloppy server may omit the suffix."""
-    now = datetime(2026, 9, 8, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 9, 8, 12, 0, 0, tzinfo=UTC)
 
     assert parse_retry_after("Tue, 08 Sep 2026 12:00:20", now=now) == pytest.approx(
         20.0

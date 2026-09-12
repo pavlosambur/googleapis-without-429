@@ -16,6 +16,7 @@ of those names.
 from __future__ import annotations
 
 from googleapis_without_429.profiles.base import ApiProfile
+from googleapis_without_429.profiles.matching import PathTable, path_segments
 
 __all__ = ["GMAIL", "GMAIL_UNPRICED_COST", "METHOD_COSTS", "resolve_gmail"]
 
@@ -107,58 +108,7 @@ METHOD_COSTS: dict[tuple[str, str], int] = {
 }
 
 
-def _compile(template: str) -> tuple[str | None, ...]:
-    """Turn a path template into per-segment matchers.
-
-    ``None`` matches any single segment. A string starting with ``":"`` matches
-    a segment ending in that custom verb, which is how Gmail spells
-    ``keypairs/{keyPairId}:disable``. Anything else must match exactly.
-    """
-    matchers: list[str | None] = []
-    for segment in template.strip("/").split("/"):
-        if segment.startswith("{"):
-            _, marker, verb = segment.partition("}:")
-            matchers.append(":" + verb if marker else None)
-        else:
-            matchers.append(segment)
-    return tuple(matchers)
-
-
-def _segment_matches(matcher: str | None, segment: str) -> bool:
-    if matcher is None:
-        return True
-    if matcher.startswith(":"):
-        return segment.endswith(matcher)
-    return segment == matcher
-
-
-# Grouped by (HTTP method, segment count) so a lookup compares a handful of
-# candidates instead of the whole table.
-_BY_SHAPE: dict[tuple[str, int], list[tuple[tuple[str | None, ...], int]]] = {}
-for (_verb, _template), _cost in METHOD_COSTS.items():
-    _matchers = _compile(_template)
-    _BY_SHAPE.setdefault((_verb, len(_matchers)), []).append((_matchers, _cost))
-
-# Most specific first. Where two templates share a shape -- one with a literal
-# segment, one with a placeholder that would also match it -- the literal has to
-# win, or a draft whose id happened to be "send" would be priced as a send.
-# Nothing in today's table collides; sorting means nothing added later can.
-for _candidates in _BY_SHAPE.values():
-    _candidates.sort(
-        key=lambda entry: sum(matcher is not None for matcher in entry[0]),
-        reverse=True,
-    )
-
-
-def _below_user(path: str) -> list[str] | None:
-    """The part of a Gmail path after ``users/{userId}``, if it is one."""
-    segments = [segment for segment in path.split("/") if segment]
-    try:
-        users_at = segments.index("users")
-    except ValueError:
-        return None
-    rest = segments[users_at + 2 :]
-    return rest or None
+_TABLE = PathTable(METHOD_COSTS)
 
 
 def resolve_gmail(
@@ -171,17 +121,11 @@ def resolve_gmail(
     Everything draws on one bucket; only the cost varies. A path this table
     does not recognise is charged ``GMAIL_UNPRICED_COST``.
     """
-    segments = _below_user(path)
+    segments = path_segments(path, after="users")
     if segments is None:
         return "units", GMAIL_UNPRICED_COST
-
-    for matchers, cost in _BY_SHAPE.get((http_method.upper(), len(segments)), ()):
-        if all(
-            _segment_matches(matcher, segment)
-            for matcher, segment in zip(matchers, segments, strict=True)
-        ):
-            return "units", cost
-    return "units", GMAIL_UNPRICED_COST
+    cost = _TABLE.lookup(http_method, segments)
+    return "units", GMAIL_UNPRICED_COST if cost is None else cost
 
 
 #: Google Gmail API v1.

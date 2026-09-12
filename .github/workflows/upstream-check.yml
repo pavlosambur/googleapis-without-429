@@ -1,0 +1,37 @@
+name: Upstream check
+
+# The Gmail and Drive cost tables are assembled by hand from a documentation
+# page and a discovery document. Neither announces a change, so a renamed path
+# or a new method would leave the tables quietly wrong. This runs monthly and
+# fails loudly when a priced path disappears upstream.
+#
+# It is not part of CI: the test suite is deliberately offline, and a Google
+# outage must not turn pull requests red.
+#
+# Two things about the schedule itself, both documented by GitHub:
+#
+#   - In a public repository, scheduled workflows are disabled automatically
+#     after 60 days with no repository activity. A guard against silent
+#     staleness can therefore go silent itself; workflow_dispatch is the way
+#     to run it by hand, and re-enabling is a click in the Actions tab.
+#   - Notifications for a scheduled workflow go to whoever last edited the
+#     cron line, so that is who hears about a failure.
+on:
+  schedule:
+    - cron: "0 6 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  discovery-drift:
+    name: cost tables vs discovery
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - run: make check-upstream

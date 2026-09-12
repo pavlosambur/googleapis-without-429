@@ -1,7 +1,7 @@
 # One definition of what "checked" means. CI calls these same targets, so a
 # green local run and a green pipeline cannot drift apart.
 .DEFAULT_GOAL := help
-.PHONY: help install lint format check-format typecheck test package check
+.PHONY: help install lint format check-format typecheck test package check check-upstream
 
 help:  ## Show the available targets
 	@grep -E '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -24,6 +24,9 @@ typecheck:  ## Run the type checker
 
 test:  ## Run the test suite with coverage
 	uv run pytest --cov
+
+check-upstream:  ## Compare the cost tables with Google's discovery documents
+	uv run python scripts/check_upstream_methods.py
 
 package:  ## Build the distributions and check what they contain
 	uv build

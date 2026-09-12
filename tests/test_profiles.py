@@ -11,6 +11,17 @@ from googleapis_without_429.profiles import (
     resolve_drive,
     resolve_sheets,
 )
+from googleapis_without_429.profiles.drive import (
+    _TABLE,
+    DRIVE_DOWNLOAD_COST,
+    DRIVE_EDIT_COST,
+    DRIVE_LIST_COST,
+    DRIVE_OTHER_COST,
+    DRIVE_READ_COST,
+    EXPLICIT_COSTS,
+    _drive_resource_path,
+    _price_by_path_shape,
+)
 
 SHEET_ID = "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
 
@@ -270,3 +281,77 @@ class TestProfileClaims:
 
     def test_a_path_without_a_version_segment_is_still_parsed(self) -> None:
         assert resolve_drive("GET", "/drive/files", "")[1] == 100
+
+
+# One real call for every entry in EXPLICIT_COSTS. The paths are written out
+# rather than built from the templates: a template typo then stops matching the
+# real path, instead of matching a path made from the same typo.
+DRIVE_EXPLICIT_CALLS = [
+    ("about.get", "GET", "/drive/v3/about", DRIVE_READ_COST),
+    (
+        "files.download",
+        "POST",
+        f"/drive/v3/files/{DRIVE_FILE_ID}/download",
+        DRIVE_DOWNLOAD_COST,
+    ),
+    (
+        "files.export",
+        "GET",
+        f"/drive/v3/files/{DRIVE_FILE_ID}/export",
+        DRIVE_DOWNLOAD_COST,
+    ),
+    ("files.generateIds", "GET", "/drive/v3/files/generateIds", DRIVE_OTHER_COST),
+]
+
+
+class TestDriveExplicitCosts:
+    """The methods Google's cost table names, and the fallback beneath them."""
+
+    @pytest.mark.parametrize(
+        ("http_method", "path", "expected"),
+        [(m, p, c) for _, m, p, c in DRIVE_EXPLICIT_CALLS],
+        ids=[label for label, *_ in DRIVE_EXPLICIT_CALLS],
+    )
+    def test_every_override_matches_a_real_path(
+        self, http_method: str, path: str, expected: int
+    ) -> None:
+        """A typo in a template would leave an entry that never matches.
+
+        This asserts on the table rather than on the final price, which is
+        what makes it a reachability check: generateIds agrees with the
+        fallback, so a mistyped template there would still give 5.
+        """
+        assert _TABLE.lookup(http_method, _drive_resource_path(path)) == expected
+
+    def test_every_entry_has_a_call_covering_it(self) -> None:
+        """Adding an override without a real path to check it fails here."""
+        assert len(DRIVE_EXPLICIT_CALLS) == len(EXPLICIT_COSTS)
+
+    def test_download_would_otherwise_be_priced_as_an_edit(self) -> None:
+        """files.download is a POST, which the fallback reads as an edit.
+
+        Google's cost table names it as the download example at 200 units.
+        Under-counting by four is the direction that produces a 429.
+        """
+        path = f"/drive/v3/files/{DRIVE_FILE_ID}/download"
+        segments = _drive_resource_path(path)
+        assert _price_by_path_shape("POST", segments, "") == DRIVE_EDIT_COST
+        assert resolve_drive("POST", path)[1] == DRIVE_DOWNLOAD_COST
+
+    def test_about_would_otherwise_be_priced_as_a_listing(self) -> None:
+        """about.get addresses no collection, so its one segment reads as one."""
+        segments = _drive_resource_path("/drive/v3/about")
+        assert _price_by_path_shape("GET", segments, "") == DRIVE_LIST_COST
+        assert resolve_drive("GET", "/drive/v3/about")[1] == DRIVE_READ_COST
+
+    def test_a_file_named_download_is_still_a_plain_read(self) -> None:
+        """Specificity: a literal segment must not swallow an id."""
+        assert resolve_drive("GET", "/drive/v3/files/download")[1] == DRIVE_READ_COST
+
+    def test_a_file_named_export_is_still_a_plain_read(self) -> None:
+        """Only the export method costs 200, not any path ending in the word."""
+        assert resolve_drive("GET", "/drive/v3/files/export")[1] == DRIVE_READ_COST
+
+    def test_an_ordinary_edit_still_falls_through_to_the_heuristic(self) -> None:
+        path = f"/drive/v3/files/{DRIVE_FILE_ID}/copy"
+        assert resolve_drive("POST", path)[1] == DRIVE_EDIT_COST

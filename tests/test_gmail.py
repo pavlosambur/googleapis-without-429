@@ -15,8 +15,6 @@ from googleapis_without_429 import DRIVE, GMAIL, SHEETS, QuotaLimiter
 from googleapis_without_429.profiles.gmail import (
     GMAIL_UNPRICED_COST,
     METHOD_COSTS,
-    _compile,
-    _segment_matches,
     resolve_gmail,
 )
 
@@ -265,39 +263,3 @@ class TestTheProfile:
 
         assert limiter.bucket(GMAIL, "units").used == 1
         assert limiter.bucket(SHEETS, "read").used == 1
-
-
-class TestPathMatching:
-    """The matcher itself, including a branch the current table does not use.
-
-    Every Gmail method with a custom verb (`keypairs/{id}:disable`) happens to
-    be one Google prices nothing for, so those all fall through to the default
-    and the verb-matching code never runs against the shipped table. It still
-    has to work: the day a priced method arrives with a colon in its path, this
-    is what will read it.
-    """
-
-    def test_a_placeholder_matches_any_segment(self) -> None:
-        assert _compile("messages/{id}") == ("messages", None)
-        assert _segment_matches(None, "anything")
-
-    def test_a_custom_verb_is_compiled_from_the_template(self) -> None:
-        assert _compile("keypairs/{keyPairId}:disable") == ("keypairs", ":disable")
-
-    def test_a_custom_verb_matches_only_that_suffix(self) -> None:
-        assert _segment_matches(":disable", "kp1:disable")
-        assert not _segment_matches(":disable", "kp1:enable")
-        assert not _segment_matches(":disable", "kp1")
-
-    def test_a_literal_segment_must_match_exactly(self) -> None:
-        assert _segment_matches("messages", "messages")
-        assert not _segment_matches("messages", "threads")
-
-    def test_a_priced_custom_verb_would_resolve(self) -> None:
-        """Proves the wiring end to end, without inventing a price in the table."""
-        matchers = _compile("keypairs/{keyPairId}:disable")
-        segments = ["keypairs", "kp1:disable"]
-        assert all(
-            _segment_matches(matcher, segment)
-            for matcher, segment in zip(matchers, segments, strict=True)
-        )

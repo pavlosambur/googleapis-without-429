@@ -31,8 +31,12 @@ def _error_details(error: BaseException) -> tuple[int | None, object]:
     """Status and body from a client's HTTP exception, if it carries one.
 
     Read by duck typing rather than by catching a specific class, which keeps
-    `aiogoogle` out of this library's dependencies. Its ``HTTPError`` exposes
-    ``res.status_code`` and ``res.content``; anything shaped the same works.
+    `aiogoogle` out of this library's dependencies: anything exposing
+    ``res.status_code`` plus a body works.
+
+    `aiogoogle` also offers ``res.content``, defined as ``json or data``. This
+    reads the two separately so the adapter does not depend on that property
+    existing on whatever transport it is given.
     """
     response = getattr(error, "res", None)
     if response is None:
@@ -121,7 +125,7 @@ def rate_limited_session(  # noqa: PLR0913 - tuning knobs, all keyword-only
             while True:
                 try:
                     return await super().send(*requests, **kwargs)
-                except Exception as error:  # noqa: PERF203 - it is a retry loop
+                except Exception as error:
                     status, body = _error_details(error)
                     attempts += 1
                     if status is None:

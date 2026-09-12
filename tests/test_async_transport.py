@@ -6,6 +6,7 @@ that this drops into that client, and only its own class can show that.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, ClassVar
 
 import pytest
@@ -24,6 +25,8 @@ from googleapis_without_429 import (
     RetryPolicy,
     rate_limited_session,
 )
+from googleapis_without_429.async_transport import _error_details
+from googleapis_without_429.errors import reasons_in
 
 from .conftest import FakeClock
 
@@ -310,3 +313,47 @@ class TestAgainstTheRealClient:
         assert google.session_factory is session_class
         assert issubclass(session_class, AiohttpSession)
         assert issubclass(session_class, AbstractSession)
+
+
+class TestTheAiogoogleContract:
+    """Pin the parts of aiogoogle's error objects this adapter reads.
+
+    `_error_details` uses getattr rather than importing aiogoogle, which keeps
+    the dependency optional but means a rename upstream degrades silently: the
+    adapter would simply stop recognising rate limits and stop retrying. These
+    tests fail loudly instead, the next time the dev dependency is updated.
+
+    An earlier version read `.content`, which aiogoogle's Response does not
+    have. Nothing caught it until a test used the real class.
+    """
+
+    def test_http_error_carries_the_response(self) -> None:
+        error = HTTPError("boom", res=Response(status_code=429))
+        assert getattr(error, "res", None) is not None
+
+    def test_response_exposes_the_status_code(self) -> None:
+        assert Response(status_code=429).status_code == 429
+
+    def test_response_exposes_a_parsed_json_body(self) -> None:
+        """The adapter prefers `json`: aiogoogle parses before raising."""
+        body = {"error": {"errors": [{"reason": "rateLimitExceeded"}]}}
+        assert Response(status_code=403, json=body).json == body
+
+    def test_response_exposes_an_unparsed_data_body(self) -> None:
+        """`data` is the fallback when the body was not JSON."""
+        assert Response(status_code=503, data="<html>").data == "<html>"
+
+    def test_error_details_reads_a_real_aiogoogle_error(self) -> None:
+        """End to end against the real classes, not a stand-in."""
+        body = {"error": {"errors": [{"reason": "userRateLimitExceeded"}]}}
+        error = HTTPError("429", res=Response(status_code=403, json=body))
+
+        status, parsed = _error_details(error)
+
+        assert status == 403
+        assert isinstance(parsed, Mapping)
+        assert reasons_in(parsed) == {"userratelimitexceeded"}
+
+    def test_error_details_falls_back_to_the_unparsed_body(self) -> None:
+        error = HTTPError("503", res=Response(status_code=503, data="<html>"))
+        assert _error_details(error) == (503, "<html>")

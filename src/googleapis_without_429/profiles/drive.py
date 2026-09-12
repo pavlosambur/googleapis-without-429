@@ -5,13 +5,16 @@ from __future__ import annotations
 import re
 
 from googleapis_without_429.profiles.base import READ_HTTP_METHODS, ApiProfile
+from googleapis_without_429.profiles.matching import PathTable
 
 __all__ = [
     "DRIVE",
     "DRIVE_DOWNLOAD_COST",
     "DRIVE_EDIT_COST",
     "DRIVE_LIST_COST",
+    "DRIVE_OTHER_COST",
     "DRIVE_READ_COST",
+    "EXPLICIT_COSTS",
     "resolve_drive",
 ]
 
@@ -23,6 +26,26 @@ DRIVE_READ_COST = 5
 DRIVE_LIST_COST = 100
 DRIVE_DOWNLOAD_COST = 200
 DRIVE_EDIT_COST = 50
+#: Cost of an action the table files under "other", such as generating ids.
+DRIVE_OTHER_COST = 5
+
+
+#: Methods the published cost table names explicitly, where the shape of the
+#: path gives the wrong answer.
+#:
+#: ``files.download`` is the one that matters: it is a POST, so the fallback
+#: below prices it as an edit at 50 units, while the documented category for it
+#: is a download at 200. Under-counting by a factor of four is how a quota is
+#: passed without noticing.
+#:
+#: Paths are relative to ``/drive/v3/``.
+EXPLICIT_COSTS: dict[tuple[str, str], int] = {
+    ("POST", "files/{fileId}/download"): DRIVE_DOWNLOAD_COST,
+    ("GET", "files/{fileId}/export"): DRIVE_DOWNLOAD_COST,
+    ("GET", "files/generateIds"): DRIVE_OTHER_COST,
+}
+
+_TABLE = PathTable(EXPLICIT_COSTS)
 
 
 def _drive_resource_path(path: str) -> list[str]:
@@ -58,6 +81,10 @@ def resolve_drive(http_method: str, path: str, query: str = "") -> tuple[str, in
     ``/export`` suffix -- Drive does not give them a path of their own.
     """
     segments = _drive_resource_path(path)
+
+    explicit = _TABLE.lookup(http_method, segments)
+    if explicit is not None:
+        return "units", explicit
 
     if http_method.upper() not in READ_HTTP_METHODS:
         # Creating, updating, copying, deleting and uploading are all edits.

@@ -11,6 +11,13 @@ from googleapis_without_429.profiles import (
     resolve_drive,
     resolve_sheets,
 )
+from googleapis_without_429.profiles.drive import (
+    DRIVE_DOWNLOAD_COST,
+    DRIVE_EDIT_COST,
+    DRIVE_OTHER_COST,
+    DRIVE_READ_COST,
+    EXPLICIT_COSTS,
+)
 
 SHEET_ID = "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
 
@@ -270,3 +277,41 @@ class TestProfileClaims:
 
     def test_a_path_without_a_version_segment_is_still_parsed(self) -> None:
         assert resolve_drive("GET", "/drive/files", "")[1] == 100
+
+
+class TestDriveExplicitCosts:
+    """Methods where the shape of the path gives the wrong price.
+
+    The fallback classifies by path shape, which is right for the documented
+    categories and wrong for the handful of methods Google names explicitly.
+    """
+
+    def test_download_is_priced_as_a_download_not_an_edit(self) -> None:
+        """files.download is a POST; the fallback would price it at 50.
+
+        Google's cost table names it as the example of the download category,
+        which is 200 units. Under-counting by four is how a quota is exceeded.
+        """
+        _, cost = resolve_drive("POST", f"/drive/v3/files/{DRIVE_FILE_ID}/download")
+        assert cost == DRIVE_DOWNLOAD_COST
+
+    def test_export_is_priced_as_a_download(self) -> None:
+        _, cost = resolve_drive("GET", f"/drive/v3/files/{DRIVE_FILE_ID}/export")
+        assert cost == DRIVE_DOWNLOAD_COST
+
+    def test_generate_ids_is_priced_as_an_other_action(self) -> None:
+        _, cost = resolve_drive("GET", "/drive/v3/files/generateIds")
+        assert cost == DRIVE_OTHER_COST
+
+    def test_a_file_named_download_is_still_a_plain_read(self) -> None:
+        """Specificity: the literal segment must not swallow an id."""
+        _, cost = resolve_drive("GET", "/drive/v3/files/download")
+        assert cost == DRIVE_READ_COST
+
+    def test_an_ordinary_edit_still_falls_through_to_the_heuristic(self) -> None:
+        _, cost = resolve_drive("POST", f"/drive/v3/files/{DRIVE_FILE_ID}/copy")
+        assert cost == DRIVE_EDIT_COST
+
+    def test_every_override_is_reachable(self) -> None:
+        """A typo in a template would leave an entry that never matches."""
+        assert len(EXPLICIT_COSTS) == 3

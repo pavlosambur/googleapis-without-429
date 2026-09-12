@@ -1,0 +1,25 @@
+name: Upstream check
+
+# The Gmail and Drive cost tables are assembled by hand from a documentation
+# page and a discovery document. Neither announces a change, so a renamed path
+# or a new method would leave the tables quietly wrong. This runs monthly and
+# fails loudly when a priced path disappears upstream.
+#
+# It is not part of CI: the test suite is deliberately offline, and a Google
+# outage must not turn pull requests red.
+on:
+  schedule:
+    - cron: "0 6 1 * *"
+  workflow_dispatch:
+
+jobs:
+  discovery-drift:
+    name: cost tables vs discovery
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - run: make check-upstream

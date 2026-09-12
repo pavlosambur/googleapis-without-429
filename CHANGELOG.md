@@ -7,7 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- Drive's `files.download` was priced at 50 units instead of 200. It is a
+  POST, so the path-shape rule classified it as an edit, while Google's cost
+  table names it as the example of the download category. Under-counting by
+  four is the direction that produces a 429. Methods the documentation names
+  explicitly now have explicit entries, with the path-shape rule as the
+  fallback for everything else.
+
+### Added
+
+- `scripts/check_upstream_methods.py` compares the Gmail and Drive cost tables
+  with Google's discovery documents, and runs monthly in its own workflow
+  rather than in CI, which is deliberately offline. It reports priced paths
+  that no longer exist upstream and Gmail methods with no entry. It cannot
+  detect a reprice, since discovery carries no costs.
+- Tests pinning the parts of `aiogoogle`'s `HTTPError` and `Response` that the
+  async adapter reads by `getattr`. A rename upstream would otherwise stop
+  retries working with every test still green.
+
+### Changed
+
+- **Requires Python 3.11.** `google.api_core` stops supporting 3.10 in releases
+  after 2026-10-04.
+- The path matcher moved from the Gmail profile to
+  `googleapis_without_429.profiles.matching`, since Drive now uses it too.
 
 ## [0.4.0] - 2026-09-09
 

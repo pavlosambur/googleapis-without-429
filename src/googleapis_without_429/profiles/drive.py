@@ -30,16 +30,26 @@ DRIVE_EDIT_COST = 50
 DRIVE_OTHER_COST = 5
 
 
-#: Methods the published cost table names explicitly, where the shape of the
-#: path gives the wrong answer.
+#: Methods the published cost table names by example, priced from that table
+#: instead of inferred from the shape of the path.
 #:
-#: ``files.download`` is the one that matters: it is a POST, so the fallback
-#: below prices it as an edit at 50 units, while the documented category for it
-#: is a download at 200. Under-counting by a factor of four is how a quota is
-#: passed without noticing.
+#: Three of these correct the fallback below, and one confirms it:
+#:
+#: - ``files.download`` is a POST, so the fallback prices it as an edit at 50
+#:   where the table names it as *the* download example at 200. Under-counting
+#:   by four is the direction that produces a 429.
+#: - ``about.get`` addresses no collection, so the fallback reads its single
+#:   segment as a listing at 100 where the table prices a read at 5.
+#: - ``files.export`` has no ``alt=media`` to give it away, and the fallback
+#:   would price it as a plain read.
+#: - ``files.generateIds`` already comes out right, because "other" and "read"
+#:   happen to cost the same. It is listed anyway so the documented figure is
+#:   written down once, and so the upstream check verifies its path still
+#:   exists. If Google ever reprices "other", this is where it changes.
 #:
 #: Paths are relative to ``/drive/v3/``.
 EXPLICIT_COSTS: dict[tuple[str, str], int] = {
+    ("GET", "about"): DRIVE_READ_COST,
     ("POST", "files/{fileId}/download"): DRIVE_DOWNLOAD_COST,
     ("GET", "files/{fileId}/export"): DRIVE_DOWNLOAD_COST,
     ("GET", "files/generateIds"): DRIVE_OTHER_COST,
@@ -64,6 +74,29 @@ def _drive_resource_path(path: str) -> list[str]:
     return parts
 
 
+def _price_by_path_shape(http_method: str, segments: list[str], query: str) -> int:
+    """Price a call the cost table does not name, from the shape of its path.
+
+    Reads are priced by what the path addresses. A path ending in a collection
+    (``/files``, ``/files/{id}/permissions``) is a list; one ending in a
+    specific item (``/files/{id}``) is a read. Google's REST paths alternate
+    collection and item, so the number of segments settles it.
+
+    Downloading a file's content is spelled as a read of that file with
+    ``alt=media`` in the query string, so the query is what gives it away.
+    """
+    if http_method.upper() not in READ_HTTP_METHODS:
+        # Creating, updating, copying, deleting and uploading are all edits.
+        return DRIVE_EDIT_COST
+
+    if "alt=media" in query:
+        return DRIVE_DOWNLOAD_COST
+
+    # Odd number of segments means a collection, even means one item.
+    is_collection = len(segments) % 2 == 1
+    return DRIVE_LIST_COST if is_collection else DRIVE_READ_COST
+
+
 def resolve_drive(http_method: str, path: str, query: str = "") -> tuple[str, int]:
     """Classify a Drive API call and price it in quota units.
 
@@ -72,13 +105,8 @@ def resolve_drive(http_method: str, path: str, query: str = "") -> tuple[str, in
     downloading content costs 200. Counting calls instead of units would be
     off by a factor of forty between the cheapest and dearest request.
 
-    Reads are priced by what the path addresses. A path ending in a collection
-    (``/files``, ``/files/{id}/permissions``) is a list; one ending in a
-    specific item (``/files/{id}``) is a read. Google's REST paths alternate
-    collection and item, so the number of segments settles it.
-
-    Downloads are recognised by ``alt=media`` in the query string or by an
-    ``/export`` suffix -- Drive does not give them a path of their own.
+    The methods Google's cost table names are priced from it directly; every
+    other call is priced from the shape of its path.
     """
     segments = _drive_resource_path(path)
 
@@ -86,16 +114,7 @@ def resolve_drive(http_method: str, path: str, query: str = "") -> tuple[str, in
     if explicit is not None:
         return "units", explicit
 
-    if http_method.upper() not in READ_HTTP_METHODS:
-        # Creating, updating, copying, deleting and uploading are all edits.
-        return "units", DRIVE_EDIT_COST
-
-    if (segments and segments[-1] == "export") or "alt=media" in query:
-        return "units", DRIVE_DOWNLOAD_COST
-
-    # Odd number of segments means a collection, even means one item.
-    is_collection = len(segments) % 2 == 1
-    return "units", DRIVE_LIST_COST if is_collection else DRIVE_READ_COST
+    return "units", _price_by_path_shape(http_method, segments, query)
 
 
 #: Google Drive API v3 (and the v2 upload endpoint).
